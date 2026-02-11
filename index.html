@@ -336,10 +336,10 @@ export default function App() {
           plugins: [vfsPlugin(files)],
         });
 
-        const jsFile = result.outputFiles.find((f) => f.path.endsWith(".js"));
-        if (!jsFile) throw new Error("esbuild produced no JS output");
+        const out = result.outputFiles?.[0];
+        if (!out?.text) throw new Error(`esbuild produced no outputFiles (got: ${JSON.stringify(result, null, 2)})`);
         const ms = Math.round(performance.now() - t0);
-        return { code: jsFile.text, ms };
+        return { code: out.text, ms };
       }
 
       function revokeOldBlob() {
