@@ -75,45 +75,50 @@
       const STORE = "files";
 
       function openDB() {
+        console.debug("[dbg:idb] openDB called");
         return new Promise((resolve, reject) => {
           const req = indexedDB.open(DB_NAME, 1);
           req.onupgradeneeded = () => {
+            console.debug("[dbg:idb] onupgradeneeded — creating object store");
             const db = req.result;
             if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "path" });
           };
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
+          req.onsuccess = () => { console.debug("[dbg:idb] openDB success"); resolve(req.result); };
+          req.onerror = () => { console.error("[dbg:idb] openDB error", req.error); reject(req.error); };
         });
       }
 
       async function dbGetAll() {
+        console.debug("[dbg:idb] dbGetAll called");
         const db = await openDB();
         return new Promise((resolve, reject) => {
           const tx = db.transaction(STORE, "readonly");
           const os = tx.objectStore(STORE);
           const req = os.getAll();
-          req.onsuccess = () => resolve(req.result || []);
-          req.onerror = () => reject(req.error);
+          req.onsuccess = () => { console.debug("[dbg:idb] dbGetAll →", req.result?.length, "rows"); resolve(req.result || []); };
+          req.onerror = () => { console.error("[dbg:idb] dbGetAll error", req.error); reject(req.error); };
         });
       }
 
       async function dbPut(path, text) {
+        console.debug("[dbg:idb] dbPut", path, `(${text.length} chars)`);
         const db = await openDB();
         return new Promise((resolve, reject) => {
           const tx = db.transaction(STORE, "readwrite");
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
+          tx.oncomplete = () => { console.debug("[dbg:idb] dbPut complete", path); resolve(); };
+          tx.onerror = () => { console.error("[dbg:idb] dbPut error", path, tx.error); reject(tx.error); };
           tx.objectStore(STORE).put({ path, text });
         });
       }
 
       async function dbClear() {
+        console.debug("[dbg:idb] dbClear called");
         const db = await openDB();
         return new Promise((resolve, reject) => {
           const tx = db.transaction(STORE, "readwrite");
           const req = tx.objectStore(STORE).clear();
-          req.onsuccess = () => resolve();
-          req.onerror = () => reject(req.error);
+          req.onsuccess = () => { console.debug("[dbg:idb] dbClear success"); resolve(); };
+          req.onerror = () => { console.error("[dbg:idb] dbClear error", req.error); reject(req.error); };
         });
       }
 
@@ -238,19 +243,26 @@ export default function App() {
       function flushEditorToVFS() {
         const current = files.get(activePath) ?? "";
         if (editorEl.value !== current) {
+          console.debug("[dbg:vfs] flushEditorToVFS — dirty, saving", activePath, `(${editorEl.value.length} chars)`);
           files.set(activePath, editorEl.value);
-          dbPut(activePath, editorEl.value).catch(() => {});
+          dbPut(activePath, editorEl.value).catch((e) => console.warn("[dbg:vfs] flushEditorToVFS dbPut failed:", e));
+        } else {
+          console.debug("[dbg:vfs] flushEditorToVFS — clean, no changes for", activePath);
         }
       }
 
       async function loadOrSeedFiles() {
+        console.debug("[dbg:boot] loadOrSeedFiles called");
         const rows = await dbGetAll();
         if (rows.length === 0) {
+          console.debug("[dbg:boot] no rows in DB — seeding from SEED map:", [...SEED.keys()]);
           for (const [p, t] of SEED.entries()) {
             files.set(p, t);
             await dbPut(p, t);
           }
+          console.debug("[dbg:boot] seeding complete,", files.size, "files");
         } else {
+          console.debug("[dbg:boot] loaded", rows.length, "files from DB:", rows.map(r => r.path));
           for (const r of rows) files.set(r.path, r.text);
         }
       }
@@ -259,16 +271,23 @@ export default function App() {
       // 3) esbuild-wasm: VFS plugin
       // -----------------------------
       function vfsPlugin(filesMap) {
+        console.debug("[dbg:vfs] creating vfsPlugin, filesMap keys:", [...filesMap.keys()]);
         return {
           name: "vfs",
           setup(build) {
+            console.debug("[dbg:vfs] plugin setup called");
+
             build.onResolve({ filter: /.*/ }, (args) => {
+              console.debug("[dbg:vfs:resolve]", { path: args.path, kind: args.kind, importer: args.importer, resolveDir: args.resolveDir });
+
               if (args.kind === "entry-point") {
+                console.debug("[dbg:vfs:resolve] → entry-point, namespace=vfs", args.path);
                 return { path: args.path, namespace: "vfs" };
               }
 
               // bare imports: react / react-dom etc
               if (!args.path.startsWith(".") && !args.path.startsWith("/")) {
+                console.debug("[dbg:vfs:resolve] → external (bare import)", args.path);
                 return { path: args.path, external: true };
               }
 
@@ -288,13 +307,21 @@ export default function App() {
               ];
 
               const hit = candidates.find((p) => filesMap.has(p));
-              if (!hit) throw new Error(`Module not found: ${args.path} (from ${args.importer || "?"})`);
+              if (!hit) {
+                console.error("[dbg:vfs:resolve] Module not found!", args.path, "from", args.importer, "tried:", candidates);
+                throw new Error(`Module not found: ${args.path} (from ${args.importer || "?"})`);
+              }
+              console.debug("[dbg:vfs:resolve] → resolved", args.path, "→", hit);
               return { path: hit, namespace: "vfs" };
             });
 
             build.onLoad({ filter: /.*/, namespace: "vfs" }, (args) => {
+              console.debug("[dbg:vfs:load]", args.path);
               const contents = filesMap.get(args.path);
-              if (contents == null) throw new Error(`Missing file: ${args.path}`);
+              if (contents == null) {
+                console.error("[dbg:vfs:load] Missing file!", args.path, "available:", [...filesMap.keys()]);
+                throw new Error(`Missing file: ${args.path}`);
+              }
 
               const loader =
                 args.path.endsWith(".tsx") ? "tsx" :
@@ -302,6 +329,7 @@ export default function App() {
                 args.path.endsWith(".jsx") ? "jsx" : "js";
 
               const resolveDir = args.path.slice(0, args.path.lastIndexOf("/")) || "/";
+              console.debug("[dbg:vfs:load] →", args.path, `(${contents.length} chars, loader=${loader}, resolveDir=${resolveDir})`);
               return { contents, loader, resolveDir };
             });
           },
@@ -315,17 +343,24 @@ export default function App() {
       let buildCounter = 0;
 
       async function initEsbuildOnce() {
+        console.debug("[dbg:esbuild] initEsbuildOnce — starting wasm download…");
+        const t0 = performance.now();
         setMode("init", "warn");
         await esbuild.initialize({
           wasmURL: "https://unpkg.com/esbuild-wasm@0.24.2/esbuild.wasm",
           worker: true,
         });
+        const ms = Math.round(performance.now() - t0);
+        console.debug(`[dbg:esbuild] initEsbuildOnce — ready in ${ms}ms`);
         setMode("ready");
       }
 
       async function buildBundle(entry = "/src/main.tsx") {
+        console.debug("[dbg:build] buildBundle called, entry:", entry);
+        console.debug("[dbg:build] VFS snapshot:", [...files.keys()]);
         const t0 = performance.now();
-        const result = await esbuild.build({
+
+        const buildOpts = {
           entryPoints: [entry],
           bundle: true,
           format: "esm",
@@ -334,48 +369,80 @@ export default function App() {
           write: false,
           jsx: "automatic",
           plugins: [vfsPlugin(files)],
-        });
+        };
+        console.debug("[dbg:build] esbuild.build options:", { ...buildOpts, plugins: "(vfsPlugin)" });
+
+        const result = await esbuild.build(buildOpts);
+
+        console.debug("[dbg:build] esbuild.build result keys:", Object.keys(result));
+        console.debug("[dbg:build] result.errors:", result.errors);
+        console.debug("[dbg:build] result.warnings:", result.warnings);
+        console.debug("[dbg:build] result.outputFiles count:", result.outputFiles?.length);
+        console.debug("[dbg:build] result.outputFiles detail:", result.outputFiles?.map(f => ({
+          path: f.path,
+          bytes: f.contents?.byteLength,
+          textLen: f.text?.length,
+        })));
 
         const out = result.outputFiles?.[0];
-        if (!out?.text) throw new Error(`esbuild produced no outputFiles (got: ${JSON.stringify(result, null, 2)})`);
+        if (!out?.text) {
+          console.error("[dbg:build] NO output! Full result:", JSON.stringify(result, null, 2));
+          throw new Error(`esbuild produced no outputFiles (got: ${JSON.stringify(result, null, 2)})`);
+        }
         const ms = Math.round(performance.now() - t0);
+        console.debug(`[dbg:build] buildBundle OK in ${ms}ms, output ${out.text.length} chars`);
         return { code: out.text, ms };
       }
 
       function revokeOldBlob() {
         if (currentBlobUrl) {
+          console.debug("[dbg:blob] revoking old blob URL:", currentBlobUrl);
           URL.revokeObjectURL(currentBlobUrl);
           currentBlobUrl = null;
         }
       }
 
       async function importBundle(code) {
+        console.debug(`[dbg:import] importBundle called (${code.length} chars)`);
+        console.debug("[dbg:import] code preview (first 200 chars):", code.slice(0, 200));
         revokeOldBlob();
         const blob = new Blob([code], { type: "text/javascript" });
         currentBlobUrl = URL.createObjectURL(blob);
 
         // Cache-bust to avoid weird module caching
         const url = `${currentBlobUrl}?v=${Date.now()}`;
-        return import(/* @vite-ignore */ url);
+        console.debug("[dbg:import] importing blob URL:", url);
+        try {
+          const mod = await import(/* @vite-ignore */ url);
+          console.debug("[dbg:import] import() succeeded, module keys:", Object.keys(mod));
+          return mod;
+        } catch (err) {
+          console.error("[dbg:import] import() FAILED:", err);
+          throw err;
+        }
       }
 
       // Minimal dispose protocol (for later)
       const disposers = [];
       function runDisposers() {
+        console.debug("[dbg:dispose] runDisposers, count:", disposers.length);
         while (disposers.length) {
           const fn = disposers.pop();
-          try { fn(); } catch {}
+          try { fn(); } catch (e) { console.warn("[dbg:dispose] disposer threw:", e); }
         }
       }
 
       async function buildAndRun(reason = "manual") {
+        console.debug(`[dbg:run] ========== buildAndRun (reason: ${reason}) ==========`);
         flushEditorToVFS();
         setMode("building", "warn");
         logStatus(`Building (${reason})…`);
 
         try {
+          console.debug("[dbg:run] calling buildBundle…");
           const { code, ms } = await buildBundle();
           buildCounter++;
+          console.debug(`[dbg:run] buildBundle returned, build #${buildCounter}, ${ms}ms, ${code.length} chars`);
 
           // Dispose old listeners/intervals if you registered them (future expansion)
           runDisposers();
@@ -383,12 +450,14 @@ export default function App() {
           setMode("importing", "warn");
           logStatus(`Build #${buildCounter} OK in ${ms}ms. Importing…`);
 
+          console.debug("[dbg:run] calling importBundle…");
           await importBundle(code);
 
           setMode("running");
           logStatus(`Build #${buildCounter} running. (${ms}ms)`);
+          console.debug(`[dbg:run] ✓ build #${buildCounter} complete and running`);
         } catch (err) {
-          console.error(err);
+          console.error("[dbg:run] buildAndRun FAILED:", err);
           setMode("error", "err");
           logStatus(String(err?.stack || err));
         }
@@ -401,8 +470,10 @@ export default function App() {
         files,
         disposers,
         async applyPatch(patches) {
+          console.debug("[dbg:patch] applyPatch called, patches:", patches.map(p => ({ path: p.path, reason: p.reason, textLen: p.text?.length })));
           // patches: Array<{path, text, reason?}>
           for (const p of patches) {
+            console.debug("[dbg:patch] setting", p.path, `(${p.text.length} chars, reason: ${p.reason || "none"})`);
             files.set(p.path, p.text);
             await dbPut(p.path, p.text);
             if (p.path === activePath) editorEl.value = p.text;
@@ -410,6 +481,7 @@ export default function App() {
           await buildAndRun("applyPatch");
         },
         async reset() {
+          console.debug("[dbg:reset] reset called — clearing DB and reloading");
           await dbClear();
           location.reload();
         },
@@ -442,12 +514,18 @@ export default function App() {
       // -----------------------------
       // 7) Boot
       // -----------------------------
+      console.debug("[dbg:boot] ========== BOOT SEQUENCE START ==========");
+      console.debug("[dbg:boot] step 1/4: loadOrSeedFiles");
       await loadOrSeedFiles();
       renderFileButtons();
       editorEl.value = files.get(activePath) ?? "";
+      console.debug("[dbg:boot] step 2/4: VFS loaded, activePath:", activePath, "files:", [...files.keys()]);
       logStatus("Loaded VFS. Initial build pending…");
+      console.debug("[dbg:boot] step 3/4: initEsbuildOnce");
       await initEsbuildOnce();
+      console.debug("[dbg:boot] step 4/4: buildAndRun(startup)");
       await buildAndRun("startup");
+      console.debug("[dbg:boot] ========== BOOT SEQUENCE DONE ==========");
     </script>
   </body>
 </html>
