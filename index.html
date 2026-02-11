@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>100% clientside TSX hot reload (esbuild-wasm + React)</title>
+
+    <!-- Import map so our Blob-ESM bundle can resolve bare imports like "react" -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18.3.1",
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+        }
+      }
+    </script>
+
+    <style>
+      html, body { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+      #shell { display: grid; grid-template-columns: 1fr 1fr; height: 100%; }
+      #left { border-right: 1px solid #ddd; display: grid; grid-template-rows: auto auto 1fr auto; }
+      #toolbar { display: flex; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+      #status { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; border-bottom: 1px solid #eee; white-space: pre-wrap; }
+      #editor { width: 100%; height: 100%; border: 0; resize: none; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; line-height: 1.4; outline: none; }
+      #files { padding: 8px 10px; border-top: 1px solid #eee; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      #files button { font-family: ui-monospace, monospace; font-size: 12px; padding: 6px 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; border-radius: 6px; }
+      #files button[data-active="true"] { border-color: #000; }
+      #right { display: grid; grid-template-rows: auto 1fr; }
+      #previewTop { padding: 10px; border-bottom: 1px solid #eee; display: flex; gap: 8px; align-items: center; }
+      #preview { height: 100%; }
+      #root { height: 100%; }
+      .pill { font-size: 12px; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; }
+      .warn { border-color: #f0c36d; background: #fff7e6; }
+      .err  { border-color: #ff9a9a; background: #fff0f0; }
+    </style>
+  </head>
+  <body>
+    <div id="shell">
+      <div id="left">
+        <div id="toolbar">
+          <strong>VFS</strong>
+          <span class="pill" id="modePill">idle</span>
+          <button id="runBtn">Build & Run</button>
+          <button id="resetBtn">Reset</button>
+          <span style="opacity:.7;font-size:12px">Ctrl/Cmd+S builds. “Self-modify” via <code>window.__RUNTIME__.applyPatch(...)</code></span>
+        </div>
+        <div id="status"></div>
+        <textarea id="editor" spellcheck="false"></textarea>
+        <div id="files"></div>
+      </div>
+
+      <div id="right">
+        <div id="previewTop">
+          <strong>Preview</strong>
+          <span class="pill warn">No React Refresh yet (state won’t always survive)</span>
+          <span class="pill">Blob-ESM import</span>
+        </div>
+        <div id="preview">
+          <div id="root"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- esbuild-wasm from CDN -->
+    <script type="module">
+      import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
+
+      // -----------------------------
+      // 0) Tiny IndexedDB helper
+      // -----------------------------
+      const DB_NAME = "vfs_hmr_demo";
+      const STORE = "files";
+
+      function openDB() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(DB_NAME, 1);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "path" });
+          };
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async function dbGetAll() {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, "readonly");
+          const os = tx.objectStore(STORE);
+          const req = os.getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async function dbPut(path, text) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, "readwrite");
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.objectStore(STORE).put({ path, text });
+        });
+      }
+
+      async function dbClear() {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).clear();
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      // -----------------------------
+      // 1) VFS seed (editable)
+      // -----------------------------
+      const SEED = new Map([
+        ["/src/main.tsx", `import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+
+declare global {
+  interface Window {
+    __RUNTIME__?: any;
+  }
+}
+
+const el = document.getElementById("root")!;
+const root = (window.__RUNTIME__.root ??= createRoot(el));
+
+// Minimal "hot rerender": we re-render the App after each import.
+// (React Refresh comes later for state-preserving swaps.)
+root.render(React.createElement(App));
+`],
+
+        ["/src/App.tsx", `import React, { useEffect, useMemo, useState } from "react";
+
+export default function App() {
+  const [count, setCount] = useState(0);
+
+  // prove "self modification" works:
+  // click the button to rewrite THIS file in the VFS.
+  async function mutateMyOwnSource() {
+    const rt = window.__RUNTIME__;
+    if (!rt) return;
+
+    const path = "/src/App.tsx";
+    const src = rt.files.get(path);
+
+    // Extremely dumb patch: append a comment with timestamp.
+    const stamp = new Date().toISOString();
+    const next = src + "\\n\\n// mutated at " + stamp + "\\n";
+
+    await rt.applyPatch([{ path, text: next, reason: "self-mutate demo" }]);
+  }
+
+  const now = useMemo(() => new Date().toLocaleTimeString(), []);
+
+  useEffect(() => {
+    // Example of cleanup discipline (useful once we add real HMR dispose):
+    return () => {};
+  }, []);
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2 style={{ marginTop: 0 }}>Clientside esbuild-wasm + TSX → Blob-ESM “hot reload”</h2>
+      <p style={{ opacity: 0.8, marginTop: 0 }}>
+        Build happens in-browser. Modules are stored in a virtual filesystem (IndexedDB).
+      </p>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={() => setCount((c) => c + 1)}>count: {count}</button>
+        <button onClick={mutateMyOwnSource}>self-modify /src/App.tsx</button>
+        <span style={{ opacity: 0.7, fontFamily: "ui-monospace, monospace" }}>first render: {now}</span>
+      </div>
+
+      <hr />
+
+      <details>
+        <summary>What’s happening?</summary>
+        <ul>
+          <li>We compile TSX with esbuild-wasm in a Web Worker.</li>
+          <li>We create a Blob URL from the ESM output and import() it.</li>
+          <li>Import triggers /src/main.tsx which re-renders the React root.</li>
+          <li>No server, no filesystem watcher. Your runtime is the dev server.</li>
+        </ul>
+      </details>
+    </div>
+  );
+}
+`],
+      ]);
+
+      // -----------------------------
+      // 2) Live VFS + UI
+      // -----------------------------
+      const statusEl = document.getElementById("status");
+      const editorEl = document.getElementById("editor");
+      const filesEl = document.getElementById("files");
+      const runBtn = document.getElementById("runBtn");
+      const resetBtn = document.getElementById("resetBtn");
+      const modePill = document.getElementById("modePill");
+
+      function setMode(mode, cls = "") {
+        modePill.textContent = mode;
+        modePill.className = "pill " + cls;
+      }
+
+      function logStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      const files = new Map(); // path -> text
+      let activePath = "/src/App.tsx";
+
+      function renderFileButtons() {
+        filesEl.innerHTML = "";
+        [...files.keys()].sort().forEach((path) => {
+          const btn = document.createElement("button");
+          btn.textContent = path;
+          btn.dataset.active = String(path === activePath);
+          btn.onclick = () => {
+            flushEditorToVFS();
+            activePath = path;
+            editorEl.value = files.get(activePath) ?? "";
+            renderFileButtons();
+          };
+          filesEl.appendChild(btn);
+        });
+      }
+
+      function flushEditorToVFS() {
+        const current = files.get(activePath) ?? "";
+        if (editorEl.value !== current) {
+          files.set(activePath, editorEl.value);
+          dbPut(activePath, editorEl.value).catch(() => {});
+        }
+      }
+
+      async function loadOrSeedFiles() {
+        const rows = await dbGetAll();
+        if (rows.length === 0) {
+          for (const [p, t] of SEED.entries()) {
+            files.set(p, t);
+            await dbPut(p, t);
+          }
+        } else {
+          for (const r of rows) files.set(r.path, r.text);
+        }
+      }
+
+      // -----------------------------
+      // 3) esbuild-wasm: VFS plugin
+      // -----------------------------
+      function vfsPlugin(filesMap) {
+        return {
+          name: "vfs",
+          setup(build) {
+            build.onResolve({ filter: /.*/ }, (args) => {
+              if (args.kind === "entry-point") {
+                return { path: args.path, namespace: "vfs" };
+              }
+
+              // bare imports: react / react-dom etc
+              if (!args.path.startsWith(".") && !args.path.startsWith("/")) {
+                return { path: args.path, external: true };
+              }
+
+              const baseDir = args.resolveDir || "/";
+              const resolved = new URL(args.path, "file://" + baseDir + "/").pathname;
+
+              const candidates = [
+                resolved,
+                resolved + ".ts",
+                resolved + ".tsx",
+                resolved + ".js",
+                resolved + ".jsx",
+                resolved + "/index.ts",
+                resolved + "/index.tsx",
+                resolved + "/index.js",
+                resolved + "/index.jsx",
+              ];
+
+              const hit = candidates.find((p) => filesMap.has(p));
+              if (!hit) throw new Error(`Module not found: ${args.path} (from ${args.importer || "?"})`);
+              return { path: hit, namespace: "vfs" };
+            });
+
+            build.onLoad({ filter: /.*/, namespace: "vfs" }, (args) => {
+              const contents = filesMap.get(args.path);
+              if (contents == null) throw new Error(`Missing file: ${args.path}`);
+
+              const loader =
+                args.path.endsWith(".tsx") ? "tsx" :
+                args.path.endsWith(".ts") ? "ts" :
+                args.path.endsWith(".jsx") ? "jsx" : "js";
+
+              const resolveDir = args.path.slice(0, args.path.lastIndexOf("/")) || "/";
+              return { contents, loader, resolveDir };
+            });
+          },
+        };
+      }
+
+      // -----------------------------
+      // 4) Build + Blob import + basic "hot reload"
+      // -----------------------------
+      let currentBlobUrl = null;
+      let buildCounter = 0;
+
+      async function initEsbuildOnce() {
+        setMode("init", "warn");
+        await esbuild.initialize({
+          wasmURL: "https://unpkg.com/esbuild-wasm@0.24.2/esbuild.wasm",
+          worker: true,
+        });
+        setMode("ready");
+      }
+
+      async function buildBundle(entry = "/src/main.tsx") {
+        const t0 = performance.now();
+        const result = await esbuild.build({
+          entryPoints: [entry],
+          bundle: true,
+          format: "esm",
+          platform: "browser",
+          sourcemap: "inline",
+          write: false,
+          jsx: "automatic",
+          plugins: [vfsPlugin(files)],
+        });
+
+        const jsFile = result.outputFiles.find((f) => f.path.endsWith(".js"));
+        if (!jsFile) throw new Error("esbuild produced no JS output");
+        const ms = Math.round(performance.now() - t0);
+        return { code: jsFile.text, ms };
+      }
+
+      function revokeOldBlob() {
+        if (currentBlobUrl) {
+          URL.revokeObjectURL(currentBlobUrl);
+          currentBlobUrl = null;
+        }
+      }
+
+      async function importBundle(code) {
+        revokeOldBlob();
+        const blob = new Blob([code], { type: "text/javascript" });
+        currentBlobUrl = URL.createObjectURL(blob);
+
+        // Cache-bust to avoid weird module caching
+        const url = `${currentBlobUrl}?v=${Date.now()}`;
+        return import(/* @vite-ignore */ url);
+      }
+
+      // Minimal dispose protocol (for later)
+      const disposers = [];
+      function runDisposers() {
+        while (disposers.length) {
+          const fn = disposers.pop();
+          try { fn(); } catch {}
+        }
+      }
+
+      async function buildAndRun(reason = "manual") {
+        flushEditorToVFS();
+        setMode("building", "warn");
+        logStatus(`Building (${reason})…`);
+
+        try {
+          const { code, ms } = await buildBundle();
+          buildCounter++;
+
+          // Dispose old listeners/intervals if you registered them (future expansion)
+          runDisposers();
+
+          setMode("importing", "warn");
+          logStatus(`Build #${buildCounter} OK in ${ms}ms. Importing…`);
+
+          await importBundle(code);
+
+          setMode("running");
+          logStatus(`Build #${buildCounter} running. (${ms}ms)`);
+        } catch (err) {
+          console.error(err);
+          setMode("error", "err");
+          logStatus(String(err?.stack || err));
+        }
+      }
+
+      // -----------------------------
+      // 5) Expose runtime globals for “self-modifying”
+      // -----------------------------
+      window.__RUNTIME__ = {
+        files,
+        disposers,
+        async applyPatch(patches) {
+          // patches: Array<{path, text, reason?}>
+          for (const p of patches) {
+            files.set(p.path, p.text);
+            await dbPut(p.path, p.text);
+            if (p.path === activePath) editorEl.value = p.text;
+          }
+          await buildAndRun("applyPatch");
+        },
+        async reset() {
+          await dbClear();
+          location.reload();
+        },
+      };
+
+      // -----------------------------
+      // 6) Wire UI + keyboard shortcuts
+      // -----------------------------
+      runBtn.onclick = () => buildAndRun("button");
+      resetBtn.onclick = () => window.__RUNTIME__.reset();
+
+      // Ctrl/Cmd+S triggers build
+      window.addEventListener("keydown", (e) => {
+        const isSave = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s";
+        if (isSave) {
+          e.preventDefault();
+          buildAndRun("Ctrl/Cmd+S");
+        }
+      });
+
+      // Debounced build after typing (optional; disabled by default)
+      let debounceTimer = null;
+      const AUTO_BUILD = false;
+      editorEl.addEventListener("input", () => {
+        if (!AUTO_BUILD) return;
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => buildAndRun("debounce"), 400);
+      });
+
+      // -----------------------------
+      // 7) Boot
+      // -----------------------------
+      await loadOrSeedFiles();
+      renderFileButtons();
+      editorEl.value = files.get(activePath) ?? "";
+      logStatus("Loaded VFS. Initial build pending…");
+      await initEsbuildOnce();
+      await buildAndRun("startup");
+    </script>
+  </body>
+</html>
