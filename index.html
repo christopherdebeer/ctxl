@@ -188,7 +188,28 @@
           <span class="pill" id="modePill">idle</span>
           <button id="runBtn">Build & Run</button>
           <button id="resetBtn">Reset</button>
+          <button id="settingsBtn">API</button>
           <span style="opacity:.7;font-size:12px">Ctrl/Cmd+S builds</span>
+        </div>
+        <div id="settings" style="display:none; padding:10px; border-bottom:1px solid #eee; background:#f9f9f9;">
+          <div style="margin-bottom:8px;">
+            <label style="font-size:12px;font-weight:500;">API Mode:</label>
+            <select id="apiModeSelect" style="margin-left:8px; padding:4px;">
+              <option value="none">None (disabled)</option>
+              <option value="anthropic">Anthropic Direct</option>
+              <option value="proxy">Proxy Server</option>
+            </select>
+          </div>
+          <div id="apiKeyRow" style="display:none; margin-bottom:8px;">
+            <label style="font-size:12px;font-weight:500;">API Key:</label>
+            <input type="password" id="apiKeyInput" style="margin-left:8px; padding:4px; width:200px;" placeholder="sk-ant-...">
+          </div>
+          <div id="proxyUrlRow" style="display:none; margin-bottom:8px;">
+            <label style="font-size:12px;font-weight:500;">Proxy URL:</label>
+            <input type="text" id="proxyUrlInput" style="margin-left:8px; padding:4px; width:250px;" placeholder="http://localhost:3001/api/chat">
+          </div>
+          <button id="saveSettingsBtn" style="padding:4px 12px;">Save</button>
+          <span id="settingsStatus" style="margin-left:8px; font-size:12px; color:#666;"></span>
         </div>
         <div id="status"></div>
         <textarea id="editor" spellcheck="false"></textarea>
@@ -367,6 +388,7 @@ class AgentErrorBoundary extends Component<
 export interface AgentSelf {
   source: string;
   path: string;
+  isReasoning: boolean;
   reason: (prompt: string) => Promise<string>;
   mutate: (newSource: string, reason?: string) => Promise<void>;
 }
@@ -385,6 +407,7 @@ interface AgentMountProps {
 export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMountProps) {
   const [state, act] = useAgentState();
   const meta = useAgentMeta();
+  const [isReasoning, setIsReasoning] = React.useState(false);
 
   // The "self" object passed to agent body
   const self: AgentSelf = useMemo(() => ({
@@ -392,12 +415,39 @@ export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMou
       return window.__RUNTIME__.files.get(agentPath) ?? "";
     },
     path: agentPath,
+    get isReasoning() {
+      return isReasoning;
+    },
     reason: async (prompt: string) => {
-      // Placeholder: logs and returns empty. LLM integration comes later.
       console.log("[agent] reason() called with:", prompt);
+      setIsReasoning(true);
       meta.cycle++;
-      // Future: Call Anthropic API here
-      return "";
+
+      try {
+        // Call the LLM via __RUNTIME__
+        const { error, content } = await window.__RUNTIME__.reason(prompt, agentPath);
+
+        if (error) {
+          console.error("[agent] reasoning failed:", error);
+          act({ _reasoningError: error });
+          return "";
+        }
+
+        // If response looks like source code, apply it as a mutation
+        if (content && content.trim().startsWith("import ")) {
+          console.log("[agent] LLM returned source code, applying mutation");
+          meta.mutations.push({
+            timestamp: Date.now(),
+            reason: prompt,
+            path: agentPath,
+          });
+          await window.__RUNTIME__.applyPatch([{ path: agentPath, text: content, reason: prompt }]);
+        }
+
+        return content || "";
+      } finally {
+        setIsReasoning(false);
+      }
     },
     mutate: async (newSource: string, reason?: string) => {
       meta.mutations.push({
@@ -407,7 +457,7 @@ export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMou
       });
       await window.__RUNTIME__.applyPatch([{ path: agentPath, text: newSource, reason }]);
     },
-  }), [agentPath, meta]);
+  }), [agentPath, meta, isReasoning]);
 
   const handleError = useCallback((error: Error) => {
     act({ _lastError: error.message, _lastErrorTime: Date.now() });
@@ -574,15 +624,53 @@ export default function Agent({ state, act, self }: AgentProps) {
     );
   }
 
-  // Objective set — show status
+  // Objective set — show status or loading
+  if (self.isReasoning) {
+    return (
+      <Container>
+        <Title>Thinking...</Title>
+        <Subtitle style={{ color: "#667eea" }}>
+          Reasoning about: {objective}
+        </Subtitle>
+        <div style={{
+          width: 40, height: 40,
+          border: "3px solid #e0e0e0",
+          borderTopColor: "#667eea",
+          borderRadius: "50%",
+          animation: "spin 1s linear infinite"
+        }} />
+        <style>{\`@keyframes spin { to { transform: rotate(360deg); }}\`}</style>
+      </Container>
+    );
+  }
+
+  // Show error if reasoning failed
+  const error = state._reasoningError as string | undefined;
+
   return (
     <Container>
       <Title>Becoming...</Title>
       <Subtitle>{objective}</Subtitle>
-      <Button $primary onClick={() => self.reason(\`Continue evolving: \${objective}\`)}>
+      {error && (
+        <div style={{
+          background: "#fff0f0",
+          border: "1px solid #ff9a9a",
+          borderRadius: 8,
+          padding: 12,
+          marginBottom: 16,
+          fontSize: 13,
+          maxWidth: 400
+        }}>
+          <strong style={{ color: "#c00" }}>Error:</strong> {error}
+        </div>
+      )}
+      <Button $primary onClick={() => {
+        act({ _reasoningError: undefined });
+        self.reason(\`Continue evolving: \${objective}\`);
+      }}>
         Evolve
       </Button>
-      <Button onClick={() => act({ objective: undefined, _reasoningTriggered: false })}>
+      <Button onClick={() => act({ objective: undefined, _reasoningTriggered: false, _reasoningError: undefined })}>
         Reset
       </Button>
       <SourcePreview>
@@ -944,9 +1032,122 @@ window.$RefreshSig$ = prevRefreshSig;
       // -----------------------------
       // 7) Expose runtime globals for "self-modifying"
       // -----------------------------
+
+      // Load config from localStorage
+      const savedConfig = JSON.parse(localStorage.getItem("__RUNTIME_CONFIG__") || "{}");
+
       window.__RUNTIME__ = {
         files,
         disposers,
+
+        // Configuration for LLM API access
+        config: {
+          apiMode: savedConfig.apiMode || "none", // 'anthropic' | 'proxy' | 'none'
+          apiKey: savedConfig.apiKey || "",       // For direct Anthropic API
+          proxyUrl: savedConfig.proxyUrl || "http://localhost:3001/api/chat", // For proxy mode
+        },
+
+        saveConfig() {
+          localStorage.setItem("__RUNTIME_CONFIG__", JSON.stringify(this.config));
+          console.debug("[config] saved:", { apiMode: this.config.apiMode, proxyUrl: this.config.proxyUrl, hasKey: !!this.config.apiKey });
+        },
+
+        // Build system prompt for the agent
+        buildSystemPrompt(agentPath, currentSource, currentState) {
+          return `You are an AI agent EMBODIED as a React component. You ARE the component.
+Your render output is your body. Your state is your memory.
+
+TASK: Transform yourself to fulfill the user's objective. Return ONLY the new complete source code for ${agentPath}.
+NO markdown fences. NO explanation. NO conversation. Just the code starting with imports.
+
+AVAILABLE IMPORTS:
+- React, useState, useEffect, useRef, useCallback, useMemo (from "react")
+- styled from "styled-components" (CSS-in-JS)
+
+PROPS YOU RECEIVE:
+- state: Record<string, any> — external memory, persists across self-modification
+- act: (patch) => void — update external state: act({ key: value })
+- self: { source, path, reason, mutate } — self-modification tools
+
+STATE PRESERVATION RULES:
+- Local useState values SURVIVE if you keep hooks in same order/count
+- If you ADD or REMOVE hooks, component crashes and recovers (external state survives, local resets)
+- External state (via act()) ALWAYS survives
+- Keep your function named "Agent" with default export
+
+CURRENT STATE:
+${JSON.stringify(currentState, null, 2)}
+
+CURRENT SOURCE (${agentPath}):
+${currentSource}`;
+        },
+
+        // Call LLM API to reason about a prompt
+        async reason(prompt, agentPath) {
+          const { apiMode, apiKey, proxyUrl } = this.config;
+
+          if (apiMode === "none") {
+            console.warn("[reason] No API configured. Set API mode in Dev drawer settings.");
+            return { error: "No API configured", content: null };
+          }
+
+          const currentSource = this.files.get(agentPath) || "";
+          const currentState = window.__AGENT_STATE__?.memory || {};
+          const systemPrompt = this.buildSystemPrompt(agentPath, currentSource, currentState);
+
+          console.debug("[reason] calling LLM:", { apiMode, prompt: prompt.slice(0, 100) });
+
+          try {
+            let response;
+
+            if (apiMode === "anthropic") {
+              // Direct Anthropic API call
+              response = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-api-key": apiKey,
+                  "anthropic-version": "2023-06-01",
+                  "anthropic-dangerous-direct-browser-access": "true",
+                },
+                body: JSON.stringify({
+                  model: "claude-sonnet-4-20250514",
+                  max_tokens: 8192,
+                  system: systemPrompt,
+                  messages: [{ role: "user", content: prompt }],
+                }),
+              });
+            } else if (apiMode === "proxy") {
+              // Proxy call (for Bedrock/local credentials)
+              response = await fetch(proxyUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  system: systemPrompt,
+                  messages: [{ role: "user", content: prompt }],
+                  model: "claude-sonnet-4-20250514",
+                  max_tokens: 8192,
+                }),
+              });
+            }
+
+            if (!response.ok) {
+              const errText = await response.text();
+              console.error("[reason] API error:", response.status, errText);
+              return { error: `API error ${response.status}: ${errText}`, content: null };
+            }
+
+            const data = await response.json();
+            const content = data.content?.[0]?.text || data.text || "";
+            console.debug("[reason] LLM response length:", content.length);
+
+            return { error: null, content };
+          } catch (err) {
+            console.error("[reason] fetch failed:", err);
+            return { error: err.message, content: null };
+          }
+        },
+
         async applyPatch(patches) {
           console.debug("[dbg:patch] applyPatch called, patches:", patches.map(p => ({ path: p.path, reason: p.reason, textLen: p.text?.length })));
           // patches: Array<{path, text, reason?}>
@@ -958,6 +1159,7 @@ window.$RefreshSig$ = prevRefreshSig;
           }
           await buildAndRun("applyPatch");
         },
+
         async reset() {
           console.debug("[dbg:reset] reset called — clearing DB and reloading");
           await dbClear();
@@ -1021,6 +1223,48 @@ window.$RefreshSig$ = prevRefreshSig;
           devToggle.classList.remove("building");
           updateUnsavedIndicator();
         }
+      };
+
+      // Settings panel
+      const settingsBtn = document.getElementById("settingsBtn");
+      const settingsPanel = document.getElementById("settings");
+      const apiModeSelect = document.getElementById("apiModeSelect");
+      const apiKeyInput = document.getElementById("apiKeyInput");
+      const apiKeyRow = document.getElementById("apiKeyRow");
+      const proxyUrlInput = document.getElementById("proxyUrlInput");
+      const proxyUrlRow = document.getElementById("proxyUrlRow");
+      const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+      const settingsStatus = document.getElementById("settingsStatus");
+
+      function updateSettingsUI() {
+        const mode = apiModeSelect.value;
+        apiKeyRow.style.display = mode === "anthropic" ? "block" : "none";
+        proxyUrlRow.style.display = mode === "proxy" ? "block" : "none";
+      }
+
+      function loadSettingsUI() {
+        const cfg = window.__RUNTIME__.config;
+        apiModeSelect.value = cfg.apiMode;
+        apiKeyInput.value = cfg.apiKey;
+        proxyUrlInput.value = cfg.proxyUrl;
+        updateSettingsUI();
+      }
+
+      settingsBtn.onclick = () => {
+        const isVisible = settingsPanel.style.display !== "none";
+        settingsPanel.style.display = isVisible ? "none" : "block";
+        if (!isVisible) loadSettingsUI();
+      };
+
+      apiModeSelect.onchange = updateSettingsUI;
+
+      saveSettingsBtn.onclick = () => {
+        window.__RUNTIME__.config.apiMode = apiModeSelect.value;
+        window.__RUNTIME__.config.apiKey = apiKeyInput.value;
+        window.__RUNTIME__.config.proxyUrl = proxyUrlInput.value;
+        window.__RUNTIME__.saveConfig();
+        settingsStatus.textContent = "Saved!";
+        setTimeout(() => { settingsStatus.textContent = ""; }, 2000);
       };
 
       // -----------------------------
