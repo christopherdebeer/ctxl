@@ -11,28 +11,113 @@
         "imports": {
           "react": "https://esm.sh/react@18.3.1",
           "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
-          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+          "react-refresh/runtime": "https://esm.sh/react-refresh@0.14.2/runtime",
+          "styled-components": "https://esm.sh/styled-components@6?deps=react@18.3.1,react-dom@18.3.1&external=react,react-dom"
         }
       }
     </script>
 
     <style>
       html, body { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-      #shell { display: grid; grid-template-columns: 1fr 1fr; height: 100%; }
-      #left { border-right: 1px solid #ddd; display: grid; grid-template-rows: auto auto 1fr auto; }
+
+      /* Agent-first layout: preview takes full viewport */
+      #shell { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr; height: 100%; }
+
+      /* Dev drawer - hidden by default, slides in from left */
+      #left {
+        position: fixed;
+        left: 0; top: 0; bottom: 0;
+        width: 50vw;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        z-index: 100;
+        background: #fff;
+        box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+      }
+      #left.open { transform: translateX(0); }
+
+      /* Backdrop overlay when drawer is open */
+      #drawerBackdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.3);
+        z-index: 99;
+      }
+      #drawerBackdrop.visible { display: block; }
+
       #toolbar { display: flex; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
       #status { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; border-bottom: 1px solid #eee; white-space: pre-wrap; }
-      #editor { width: 100%; height: 100%; border: 0; resize: none; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; line-height: 1.4; outline: none; }
+      #editor { width: 100%; height: 100%; border: 0; resize: none; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; line-height: 1.4; outline: none; box-sizing: border-box; }
       #files { padding: 8px 10px; border-top: 1px solid #eee; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       #files button { font-family: ui-monospace, monospace; font-size: 12px; padding: 6px 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; border-radius: 6px; }
       #files button[data-active="true"] { border-color: #000; }
-      #right { display: grid; grid-template-rows: auto 1fr; }
+
+      /* Preview takes full space */
+      #right { display: grid; grid-template-rows: auto 1fr; height: 100%; }
       #previewTop { padding: 10px; border-bottom: 1px solid #eee; display: flex; gap: 8px; align-items: center; }
       #preview { height: 100%; }
       #root { height: 100%; }
+
       .pill { font-size: 12px; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; }
       .warn { border-color: #f0c36d; background: #fff7e6; }
       .err  { border-color: #ff9a9a; background: #fff0f0; }
+
+      /* Dev toggle button */
+      #devToggle {
+        padding: 6px 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        background: #fff;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      #devToggle:hover { background: #f5f5f5; border-color: #ccc; }
+      #devToggle.active { background: #f0f0f0; border-color: #999; }
+
+      /* Unsaved indicator dot */
+      #devToggle .indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: none;
+      }
+      #devToggle.unsaved .indicator {
+        display: block;
+        background: #f0c36d;
+      }
+      #devToggle.building .indicator {
+        display: block;
+        background: #667eea;
+        animation: pulse 1s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+
+      /* Mobile viewport */
+      @media (max-width: 768px) {
+        /* Drawer covers full width on mobile */
+        #left {
+          width: 100vw;
+        }
+        #toolbar { flex-wrap: wrap; }
+        #toolbar button { min-height: 44px; min-width: 44px; padding: 10px 16px; }
+        #files { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+        #files button { min-height: 44px; flex-shrink: 0; }
+        #editor { min-height: 200px; }
+        #previewTop { flex-wrap: wrap; }
+        #devToggle { min-height: 44px; min-width: 44px; }
+      }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 
@@ -40,24 +125,29 @@
   <body>
     <script>eruda.init();</script>
     <div id="shell">
+      <!-- Backdrop for drawer -->
+      <div id="drawerBackdrop"></div>
+
+      <!-- Dev drawer (hidden by default) -->
       <div id="left">
         <div id="toolbar">
           <strong>VFS</strong>
           <span class="pill" id="modePill">idle</span>
           <button id="runBtn">Build & Run</button>
           <button id="resetBtn">Reset</button>
-          <span style="opacity:.7;font-size:12px">Ctrl/Cmd+S builds. “Self-modify” via <code>window.__RUNTIME__.applyPatch(...)</code></span>
+          <span style="opacity:.7;font-size:12px">Ctrl/Cmd+S builds</span>
         </div>
         <div id="status"></div>
         <textarea id="editor" spellcheck="false"></textarea>
         <div id="files"></div>
       </div>
 
+      <!-- Agent preview (full viewport) -->
       <div id="right">
         <div id="previewTop">
-          <strong>Preview</strong>
-          <span class="pill warn">No React Refresh yet (state won’t always survive)</span>
-          <span class="pill">Blob-ESM import</span>
+          <button id="devToggle">Dev<span class="indicator"></span></button>
+          <span class="pill" id="refreshPill">React Refresh loading…</span>
+          <span class="pill" id="blobPill">Blob-ESM</span>
         </div>
         <div id="preview">
           <div id="root"></div>
@@ -129,26 +219,277 @@
       const SEED = new Map([
         ["/src/main.tsx", `import React from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
+import { AgentMount } from "./agent-mount";
+import Agent from "./agent";
 
 declare global {
   interface Window {
     __RUNTIME__?: any;
+    __AGENT_STATE__?: any;
   }
 }
 
 const el = document.getElementById("root")!;
 const root = (window.__RUNTIME__.root ??= createRoot(el));
 
-// Minimal "hot rerender": we re-render the App after each import.
-// (React Refresh comes later for state-preserving swaps.)
-root.render(React.createElement(App));
+// Only mount on first render; React Refresh handles subsequent updates
+if (!window.__RUNTIME__._mounted) {
+  root.render(
+    React.createElement(AgentMount, {
+      agentPath: "/src/agent.tsx",
+      AgentBody: Agent,
+    })
+  );
+  window.__RUNTIME__._mounted = true;
+}
 `],
 
-        ["/src/App.tsx", `import React, { useEffect, useMemo, useState } from "react";
+        ["/src/useAgentState.ts", `import { useSyncExternalStore, useCallback } from "react";
+
+type AgentMemory = Record<string, any>;
+
+export function useAgentState<T extends AgentMemory = AgentMemory>(): [T, (patch: Partial<T>) => void] {
+  const memory = useSyncExternalStore(
+    (cb) => window.__AGENT_STATE__.subscribe(cb),
+    () => window.__AGENT_STATE__.get()
+  ) as T;
+
+  const setMemory = useCallback((patch: Partial<T>) => {
+    window.__AGENT_STATE__.set(patch);
+  }, []);
+
+  return [memory, setMemory];
+}
+
+export function useAgentMeta() {
+  return window.__AGENT_STATE__.meta;
+}
+`],
+
+        ["/src/agent-mount.tsx", `import React, { Component, useCallback, useMemo } from "react";
+import { useAgentState, useAgentMeta } from "./useAgentState";
+
+// Error boundary for agent body isolation
+class AgentErrorBoundary extends Component<
+  { children: React.ReactNode; onError?: (error: Error) => void },
+  { hasError: boolean; error: Error | null }
+> {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("[agent-mount] Agent body crashed:", error, info);
+    this.props.onError?.(error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 16, background: "#fff0f0", border: "1px solid #ff9a9a", borderRadius: 8 }}>
+          <h3 style={{ margin: 0, color: "#c00" }}>Agent Error</h3>
+          <pre style={{ margin: "8px 0 0", fontSize: 12, whiteSpace: "pre-wrap" }}>
+            {this.state.error?.message}
+          </pre>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{ marginTop: 8, padding: "4px 12px" }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export interface AgentSelf {
+  source: string;
+  path: string;
+  reason: (prompt: string) => Promise<string>;
+  mutate: (newSource: string, reason?: string) => Promise<void>;
+}
+
+export interface AgentProps {
+  state: Record<string, any>;
+  act: (patch: Record<string, any>) => void;
+  self: AgentSelf;
+}
+
+interface AgentMountProps {
+  agentPath?: string;
+  AgentBody: React.ComponentType<AgentProps>;
+}
+
+export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMountProps) {
+  const [state, act] = useAgentState();
+  const meta = useAgentMeta();
+
+  // The "self" object passed to agent body
+  const self: AgentSelf = useMemo(() => ({
+    get source() {
+      return window.__RUNTIME__.files.get(agentPath) ?? "";
+    },
+    path: agentPath,
+    reason: async (prompt: string) => {
+      // Placeholder: logs and returns empty. LLM integration comes later.
+      console.log("[agent] reason() called with:", prompt);
+      meta.cycle++;
+      // Future: Call Anthropic API here
+      return "";
+    },
+    mutate: async (newSource: string, reason?: string) => {
+      meta.mutations.push({
+        timestamp: Date.now(),
+        reason: reason ?? "self-mutation",
+        path: agentPath,
+      });
+      await window.__RUNTIME__.applyPatch([{ path: agentPath, text: newSource, reason }]);
+    },
+  }), [agentPath, meta]);
+
+  const handleError = useCallback((error: Error) => {
+    act({ _lastError: error.message, _lastErrorTime: Date.now() });
+  }, [act]);
+
+  return (
+    <AgentErrorBoundary onError={handleError}>
+      <AgentBody state={state} act={act} self={self} />
+    </AgentErrorBoundary>
+  );
+}
+`],
+
+        ["/src/agent.tsx", `import React, { useMemo, useState } from "react";
+import styled from "styled-components";
+import type { AgentProps } from "./agent-mount";
+
+const Container = styled.div\`
+  padding: 16px;
+\`;
+
+const Title = styled.h2\`
+  margin-top: 0;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+\`;
+
+const Button = styled.button<{ $primary?: boolean }>\`
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: \${props => props.$primary ? 'linear-gradient(90deg, #667eea, #764ba2)' : '#fff'};
+  color: \${props => props.$primary ? '#fff' : 'inherit'};
+  cursor: pointer;
+  transition: transform 0.1s;
+  &:hover { transform: scale(1.02); }
+  &:active { transform: scale(0.98); }
+\`;
+
+const ButtonRow = styled.div\`
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+\`;
+
+// This is the self-modifying agent body
+export default function Agent({ state, act, self }: AgentProps) {
+  // Test: local useState (resets on self-modify, but should work for normal clicks)
+  const [localCount, setLocalCount] = useState(0);
+  // External state (survives self-modify)
+  const extCount = state.count ?? 0;
+  const now = useMemo(() => new Date().toLocaleTimeString(), []);
+
+  async function handleSelfModify() {
+    const stamp = new Date().toISOString();
+    const newSource = self.source + "\\n\\n// mutated at " + stamp + "\\n";
+    await self.mutate(newSource, "self-mutate demo");
+  }
+
+  async function handleReason() {
+    // Trigger reasoning (placeholder)
+    const result = await self.reason("What should I do next?");
+    console.log("[agent] reason result:", result);
+  }
+
+  return (
+    <Container>
+      <Title>Self-Modifying Agent</Title>
+      <p style={{ opacity: 0.8, marginTop: 0 }}>
+        This component can read and rewrite its own source code.
+        <br />
+        State survives self-modification via external store.
+      </p>
+
+      <ButtonRow>
+        <Button $primary onClick={() => setLocalCount(c => c + 1)}>local: {localCount}</Button>
+        <Button onClick={() => act({ count: extCount + 1 })}>external: {extCount}</Button>
+        <Button onClick={handleSelfModify}>self-modify</Button>
+        <Button onClick={handleReason}>reason()</Button>
+      </ButtonRow>
+      <p style={{ opacity: 0.7, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>first render: {now}</p>
+
+      <hr />
+
+      <details>
+        <summary>Agent capabilities</summary>
+        <ul>
+          <li><code>self.source</code> — read own source code</li>
+          <li><code>self.mutate(src)</code> — rewrite self</li>
+          <li><code>self.reason(prompt)</code> — trigger reasoning (LLM placeholder)</li>
+          <li><code>state</code> / <code>act</code> — external memory</li>
+        </ul>
+      </details>
+    </Container>
+  );
+}
+`],
+
+        ["/src/App.tsx", `import React, { useEffect, useMemo } from "react";
+import styled from "styled-components";
+import { useAgentState } from "./useAgentState";
+
+const Container = styled.div\`
+  padding: 16px;
+\`;
+
+const Title = styled.h2\`
+  margin-top: 0;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+\`;
+
+const Button = styled.button<{ $primary?: boolean }>\`
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: \${props => props.$primary ? 'linear-gradient(90deg, #667eea, #764ba2)' : '#fff'};
+  color: \${props => props.$primary ? '#fff' : 'inherit'};
+  cursor: pointer;
+  transition: transform 0.1s;
+  &:hover { transform: scale(1.02); }
+  &:active { transform: scale(0.98); }
+\`;
+
+const ButtonRow = styled.div\`
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+\`;
 
 export default function App() {
-  const [count, setCount] = useState(0);
+  // External state survives self-modification and hot reload
+  const [memory, setMemory] = useAgentState<{ count: number }>();
+  const count = memory.count ?? 0;
 
   // prove "self modification" works:
   // click the button to rewrite THIS file in the VFS.
@@ -174,30 +515,34 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ padding: 16 }}>
-      <h2 style={{ marginTop: 0 }}>Clientside esbuild-wasm + TSX → Blob-ESM “hot reload”</h2>
+    <Container>
+      <Title>Clientside esbuild-wasm + TSX → Blob-ESM "hot reload"</Title>
       <p style={{ opacity: 0.8, marginTop: 0 }}>
         Build happens in-browser. Modules are stored in a virtual filesystem (IndexedDB).
+        <br />
+        <strong>State survives self-modification</strong> via external store.
       </p>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={() => setCount((c) => c + 1)}>count: {count}</button>
-        <button onClick={mutateMyOwnSource}>self-modify /src/App.tsx</button>
+      <ButtonRow>
+        <Button $primary onClick={() => setMemory({ count: count + 1 })}>count: {count}</Button>
+        <Button onClick={mutateMyOwnSource}>self-modify /src/App.tsx</Button>
         <span style={{ opacity: 0.7, fontFamily: "ui-monospace, monospace" }}>first render: {now}</span>
-      </div>
+      </ButtonRow>
 
       <hr />
 
       <details>
-        <summary>What’s happening?</summary>
+        <summary>What's happening?</summary>
         <ul>
           <li>We compile TSX with esbuild-wasm in a Web Worker.</li>
           <li>We create a Blob URL from the ESM output and import() it.</li>
           <li>Import triggers /src/main.tsx which re-renders the React root.</li>
           <li>No server, no filesystem watcher. Your runtime is the dev server.</li>
+          <li><strong>State lives in window.__AGENT_STATE__</strong> — survives self-modification.</li>
+          <li><strong>styled-components</strong> available for CSS-in-JS.</li>
         </ul>
       </details>
-    </div>
+    </Container>
   );
 }
 `],
@@ -223,7 +568,7 @@ export default function App() {
       }
 
       const files = new Map(); // path -> text
-      let activePath = "/src/App.tsx";
+      let activePath = "/src/agent.tsx";
 
       function renderFileButtons() {
         filesEl.innerHTML = "";
@@ -269,7 +614,52 @@ export default function App() {
       }
 
       // -----------------------------
-      // 3) esbuild-wasm: VFS plugin
+      // 3) React Refresh injection helper
+      // -----------------------------
+      function injectReactRefresh(code, filePath) {
+        // Detect PascalCase function/const component names
+        const componentRegex = /(?:export\s+(?:default\s+)?)?(?:function|const)\s+([A-Z][a-zA-Z0-9]*)/g;
+        const components = [];
+        let match;
+        while ((match = componentRegex.exec(code)) !== null) {
+          components.push(match[1]);
+        }
+
+        if (components.length === 0) {
+          console.debug("[dbg:refresh] no components detected in", filePath);
+          return code;
+        }
+
+        console.debug("[dbg:refresh] detected components in", filePath, ":", components);
+
+        // Wrap module to save/restore globals, then register components
+        const registrations = components
+          .map(name => `  window.$RefreshReg$(${name}, "${name}");`)
+          .join("\n");
+
+        const wrapped = `
+// React Refresh preamble
+var prevRefreshReg = window.$RefreshReg$;
+var prevRefreshSig = window.$RefreshSig$;
+window.$RefreshReg$ = (type, id) => {
+  window.__RUNTIME__.RefreshRuntime.register(type, "${filePath}" + " " + id);
+};
+window.$RefreshSig$ = window.__RUNTIME__.RefreshRuntime.createSignatureFunctionForTransform;
+
+${code}
+
+// React Refresh registration
+${registrations}
+
+// Restore globals
+window.$RefreshReg$ = prevRefreshReg;
+window.$RefreshSig$ = prevRefreshSig;
+`;
+        return wrapped;
+      }
+
+      // -----------------------------
+      // 4) esbuild-wasm: VFS plugin
       // -----------------------------
       function vfsPlugin(filesMap) {
         console.debug("[dbg:vfs] creating vfsPlugin, filesMap keys:", [...filesMap.keys()]);
@@ -318,7 +708,7 @@ export default function App() {
 
             build.onLoad({ filter: /.*/, namespace: "vfs" }, (args) => {
               console.debug("[dbg:vfs:load]", args.path);
-              const contents = filesMap.get(args.path);
+              let contents = filesMap.get(args.path);
               if (contents == null) {
                 console.error("[dbg:vfs:load] Missing file!", args.path, "available:", [...filesMap.keys()]);
                 throw new Error(`Missing file: ${args.path}`);
@@ -329,6 +719,11 @@ export default function App() {
                 args.path.endsWith(".ts") ? "ts" :
                 args.path.endsWith(".jsx") ? "jsx" : "js";
 
+              // Inject React Refresh registration for TSX/JSX files
+              if ((loader === "tsx" || loader === "jsx") && window.__RUNTIME__?.RefreshRuntime) {
+                contents = injectReactRefresh(contents, args.path);
+              }
+
               const resolveDir = args.path.slice(0, args.path.lastIndexOf("/")) || "/";
               console.debug("[dbg:vfs:load] →", args.path, `(${contents.length} chars, loader=${loader}, resolveDir=${resolveDir})`);
               return { contents, loader, resolveDir };
@@ -338,7 +733,7 @@ export default function App() {
       }
 
       // -----------------------------
-      // 4) Build + Blob import + basic "hot reload"
+      // 5) Build + Blob import + basic "hot reload"
       // -----------------------------
       let currentBlobUrl = null;
       let buildCounter = 0;
@@ -431,6 +826,9 @@ export default function App() {
           const fn = disposers.pop();
           try { fn(); } catch (e) { console.warn("[dbg:dispose] disposer threw:", e); }
         }
+        // Note: Do NOT remove styled-components style tags here.
+        // React Refresh keeps components mounted, so styles remain valid.
+        // Removing them would break styling since components don't remount.
       }
 
       async function buildAndRun(reason = "manual") {
@@ -454,6 +852,14 @@ export default function App() {
           console.debug("[dbg:run] calling importBundle…");
           await importBundle(code);
 
+          // Trigger React Refresh after import
+          if (window.__RUNTIME__?.RefreshRuntime) {
+            setTimeout(() => {
+              console.debug("[dbg:refresh] calling performReactRefresh");
+              window.__RUNTIME__.RefreshRuntime.performReactRefresh();
+            }, 30);
+          }
+
           setMode("running");
           logStatus(`Build #${buildCounter} running. (${ms}ms)`);
           console.debug(`[dbg:run] ✓ build #${buildCounter} complete and running`);
@@ -465,7 +871,31 @@ export default function App() {
       }
 
       // -----------------------------
-      // 5) Expose runtime globals for “self-modifying”
+      // 6) External state store (survives self-modification)
+      // -----------------------------
+      window.__AGENT_STATE__ = {
+        memory: {},
+        meta: { cycle: 0, mutations: [] },
+        _listeners: new Set(),
+        get() {
+          return this.memory;
+        },
+        set(patch) {
+          // Create new object so useSyncExternalStore detects the change
+          this.memory = { ...this.memory, ...patch };
+          this._notify();
+        },
+        subscribe(fn) {
+          this._listeners.add(fn);
+          return () => this._listeners.delete(fn);
+        },
+        _notify() {
+          this._listeners.forEach(fn => fn(this.memory));
+        }
+      };
+
+      // -----------------------------
+      // 7) Expose runtime globals for "self-modifying"
       // -----------------------------
       window.__RUNTIME__ = {
         files,
@@ -489,17 +919,86 @@ export default function App() {
       };
 
       // -----------------------------
-      // 6) Wire UI + keyboard shortcuts
+      // 8) Dev drawer toggle
+      // -----------------------------
+      const devToggle = document.getElementById("devToggle");
+      const leftDrawer = document.getElementById("left");
+      const drawerBackdrop = document.getElementById("drawerBackdrop");
+
+      function openDrawer() {
+        leftDrawer.classList.add("open");
+        drawerBackdrop.classList.add("visible");
+        devToggle.classList.add("active");
+      }
+
+      function closeDrawer() {
+        leftDrawer.classList.remove("open");
+        drawerBackdrop.classList.remove("visible");
+        devToggle.classList.remove("active");
+      }
+
+      function toggleDrawer() {
+        if (leftDrawer.classList.contains("open")) {
+          closeDrawer();
+        } else {
+          openDrawer();
+        }
+      }
+
+      devToggle.onclick = toggleDrawer;
+      drawerBackdrop.onclick = closeDrawer;
+
+      // Track unsaved changes for visual indicator
+      let lastSavedContent = "";
+      function updateUnsavedIndicator() {
+        const current = editorEl.value;
+        const saved = files.get(activePath) ?? "";
+        if (current !== saved) {
+          devToggle.classList.add("unsaved");
+          devToggle.classList.remove("building");
+        } else {
+          devToggle.classList.remove("unsaved");
+        }
+      }
+
+      editorEl.addEventListener("input", updateUnsavedIndicator);
+
+      // Update setMode to show building indicator
+      const originalSetMode = setMode;
+      setMode = function(mode, cls = "") {
+        originalSetMode(mode, cls);
+        if (mode === "building" || mode === "importing") {
+          devToggle.classList.add("building");
+          devToggle.classList.remove("unsaved");
+        } else {
+          devToggle.classList.remove("building");
+          updateUnsavedIndicator();
+        }
+      };
+
+      // -----------------------------
+      // 9) Wire UI + keyboard shortcuts
       // -----------------------------
       runBtn.onclick = () => buildAndRun("button");
       resetBtn.onclick = () => window.__RUNTIME__.reset();
 
       // Ctrl/Cmd+S triggers build
+      // Ctrl/Cmd+\ or Ctrl/Cmd+E toggles dev drawer
       window.addEventListener("keydown", (e) => {
         const isSave = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s";
+        const isToggle = (e.ctrlKey || e.metaKey) && (e.key === "\\" || e.key.toLowerCase() === "e");
+
         if (isSave) {
           e.preventDefault();
           buildAndRun("Ctrl/Cmd+S");
+        }
+        if (isToggle) {
+          e.preventDefault();
+          toggleDrawer();
+        }
+        // Escape closes drawer
+        if (e.key === "Escape" && leftDrawer.classList.contains("open")) {
+          closeDrawer();
         }
       });
 
@@ -513,18 +1012,37 @@ export default function App() {
       });
 
       // -----------------------------
-      // 7) Boot
+      // 10) Boot
       // -----------------------------
+      const refreshPill = document.getElementById("refreshPill");
+
       console.debug("[dbg:boot] ========== BOOT SEQUENCE START ==========");
-      console.debug("[dbg:boot] step 1/4: loadOrSeedFiles");
+      console.debug("[dbg:boot] step 1/5: loadOrSeedFiles");
       await loadOrSeedFiles();
       renderFileButtons();
       editorEl.value = files.get(activePath) ?? "";
-      console.debug("[dbg:boot] step 2/4: VFS loaded, activePath:", activePath, "files:", [...files.keys()]);
+      console.debug("[dbg:boot] step 2/5: VFS loaded, activePath:", activePath, "files:", [...files.keys()]);
       logStatus("Loaded VFS. Initial build pending…");
-      console.debug("[dbg:boot] step 3/4: initEsbuildOnce");
+
+      console.debug("[dbg:boot] step 3/5: Initialize React Refresh");
+      try {
+        const RefreshRuntime = await import("react-refresh/runtime");
+        RefreshRuntime.injectIntoGlobalHook(window);
+        window.$RefreshReg$ = () => {};
+        window.$RefreshSig$ = () => (type) => type;
+        window.__RUNTIME__.RefreshRuntime = RefreshRuntime;
+        refreshPill.textContent = "React Refresh active";
+        refreshPill.classList.remove("warn");
+        console.debug("[dbg:boot] React Refresh initialized successfully");
+      } catch (err) {
+        console.error("[dbg:boot] React Refresh failed to load:", err);
+        refreshPill.textContent = "React Refresh failed";
+        refreshPill.classList.add("err");
+      }
+
+      console.debug("[dbg:boot] step 4/5: initEsbuildOnce");
       await initEsbuildOnce();
-      console.debug("[dbg:boot] step 4/4: buildAndRun(startup)");
+      console.debug("[dbg:boot] step 5/5: buildAndRun(startup)");
       await buildAndRun("startup");
       console.debug("[dbg:boot] ========== BOOT SEQUENCE DONE ==========");
     </script>
