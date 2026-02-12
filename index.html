@@ -308,6 +308,9 @@ declare global {
   }
 }
 
+// Store the Agent component in runtime so AgentMount always gets the latest version
+window.__RUNTIME__.AgentModule = { default: Agent };
+
 const el = document.getElementById("root")!;
 const root = (window.__RUNTIME__.root ??= createRoot(el));
 
@@ -316,7 +319,6 @@ if (!window.__RUNTIME__._mounted) {
   root.render(
     React.createElement(AgentMount, {
       agentPath: "/src/agent.tsx",
-      AgentBody: Agent,
     })
   );
   window.__RUNTIME__._mounted = true;
@@ -401,10 +403,12 @@ export interface AgentProps {
 
 interface AgentMountProps {
   agentPath?: string;
-  AgentBody: React.ComponentType<AgentProps>;
 }
 
-export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMountProps) {
+export function AgentMount({ agentPath = "/src/agent.tsx" }: AgentMountProps) {
+  // Get the latest Agent component from the runtime module (updated on each build)
+  // Use 'let' to avoid React Refresh detecting this as a component definition
+  let AgentBody = window.__RUNTIME__.AgentModule?.default;
   const [state, act] = useAgentState();
   const meta = useAgentMeta();
   const [isReasoning, setIsReasoning] = React.useState(false);
@@ -462,6 +466,11 @@ export function AgentMount({ agentPath = "/src/agent.tsx", AgentBody }: AgentMou
   const handleError = useCallback((error: Error) => {
     act({ _lastError: error.message, _lastErrorTime: Date.now() });
   }, [act]);
+
+  // Show loading state if AgentBody is not yet available
+  if (!AgentBody) {
+    return <div style={{ padding: 32, textAlign: "center", color: "#666" }}>Loading agent...</div>;
+  }
 
   return (
     <AgentErrorBoundary onError={handleError}>
@@ -946,6 +955,7 @@ window.$RefreshSig$ = prevRefreshSig;
         try {
           const mod = await import(/* @vite-ignore */ currentBlobUrl);
           console.debug("[dbg:import] import() succeeded, module keys:", Object.keys(mod));
+          // Note: main.tsx stores AgentModule in __RUNTIME__ when it runs
           return mod;
         } catch (err) {
           console.error("[dbg:import] import() FAILED:", err);
