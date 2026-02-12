@@ -1,0 +1,17 @@
+{
+  "name": "yatc-proxy",
+  "version": "1.0.0",
+  "description": "Thin proxy for Anthropic API (supports direct API and Bedrock)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.14.0"
+  }
+}
