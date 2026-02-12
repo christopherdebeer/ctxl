@@ -14,33 +14,29 @@ npm install
 ### With Anthropic API Key
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-npm start
+ANTHROPIC_API_KEY=sk-ant-... npm start
 ```
 
 ### With AWS Bedrock
 
-The SDK uses standard AWS credential chain (env vars, ~/.aws/credentials, IAM role):
+If `ANTHROPIC_API_KEY` is NOT set, the proxy uses Bedrock with AWS credentials.
 
 ```bash
-# Optional: specify region and model
-export AWS_REGION=us-east-1
-export ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
+# Using a named profile
+AWS_PROFILE=cline-profile AWS_REGION=us-east-1 npm start
 
-npm start
+# Or with SSO (login first)
+aws sso login --profile cline-profile
+AWS_PROFILE=cline-profile npm start
 ```
 
-### With AWS SSO / Profile
-
-```bash
-aws sso login --profile my-profile
-export AWS_PROFILE=my-profile
-npm start
-```
+The proxy automatically maps model names to Bedrock model IDs:
+- `claude-sonnet-4-20250514` → `us.anthropic.claude-sonnet-4-20250514-v1:0`
+- `claude-3-5-sonnet-20241022` → `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
 
 ## Endpoints
 
-- `POST /api/chat` - Proxy to Anthropic Messages API
+- `POST /api/chat` - Proxy to Anthropic/Bedrock Messages API
 - `GET /health` - Health check with auth mode info
 
 ## Request Format
