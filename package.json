@@ -1,0 +1,22 @@
+{
+  "name": "you-are-the-component",
+  "version": "0.1.0",
+  "description": "Self-modifying React components with LLM reasoning",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n html,proxy -c cyan,magenta \"npm run serve\" \"npm run proxy\"",
+    "serve": "npx serve -l 3000 -n .",
+    "proxy": "node proxy/server.js",
+    "build": "echo 'Static site - no build needed'",
+    "vercel-build": "echo 'Static site - no build needed'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "serve": "^14.2.1"
+  }
+}
