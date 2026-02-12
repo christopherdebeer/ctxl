@@ -5,7 +5,8 @@
  * with $RefreshReg$ calls so React Refresh can track component identity.
  */
 export function injectReactRefresh(code: string, filePath: string): string {
-  const componentRegex = /(?:export\s+(?:default\s+)?)?(?:function|const)\s+([A-Z][a-zA-Z0-9]*)/g;
+  // Match PascalCase names (must have lowercase after first cap to exclude ALL_CAPS constants)
+  const componentRegex = /(?:export\s+(?:default\s+)?)?(?:function|const)\s+([A-Z][a-z][a-zA-Z0-9]*)/g;
   const components: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = componentRegex.exec(code)) !== null) {
