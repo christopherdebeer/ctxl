@@ -2,27 +2,46 @@
 /**
  * Thin proxy server for Anthropic API
  *
- * The Anthropic SDK automatically determines auth based on environment:
- * - ANTHROPIC_API_KEY: Direct API access
- * - AWS credentials (env vars, ~/.aws/credentials, IAM role): Bedrock
+ * Auth detection:
+ * - If ANTHROPIC_API_KEY is set: uses direct Anthropic API
+ * - Otherwise: uses AWS Bedrock (respects AWS_PROFILE, AWS_REGION, etc.)
  *
- * Usage:
- *   npm install @anthropic-ai/sdk express cors
- *   node server.js
+ * Usage with API key:
+ *   ANTHROPIC_API_KEY=sk-ant-... node server.js
  *
- * Or with Bedrock:
- *   npm install @anthropic-ai/sdk @anthropic-ai/bedrock-sdk express cors
- *   ANTHROPIC_BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-20250514-v1:0 node server.js
+ * Usage with Bedrock:
+ *   AWS_PROFILE=my-profile AWS_REGION=us-east-1 node server.js
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import express from "express";
 import cors from "cors";
 
 const PORT = process.env.PORT || 3001;
+const USE_BEDROCK = !process.env.ANTHROPIC_API_KEY;
 
-// Initialize client - SDK auto-detects auth method
-const anthropic = new Anthropic();
+// Bedrock model mapping (API model -> Bedrock model ID)
+const BEDROCK_MODELS = {
+  "claude-sonnet-4-20250514": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0 ",
+  "claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "claude-3-5-haiku-20241022": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+};
+
+let client;
+
+async function initClient() {
+  if (USE_BEDROCK) {
+    const { AnthropicBedrock } = await import("@anthropic-ai/bedrock-sdk");
+    client = new AnthropicBedrock({
+      awsRegion: process.env.AWS_REGION || "us-east-1",
+    });
+    console.log(`[proxy] Using Bedrock (profile: ${process.env.AWS_PROFILE || "default"}, region: ${process.env.AWS_REGION || "us-east-1"})`);
+  } else {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    client = new Anthropic();
+    console.log("[proxy] Using direct Anthropic API");
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -31,11 +50,16 @@ app.use(express.json({ limit: "1mb" }));
 app.post("/api/chat", async (req, res) => {
   const { system, messages, model, max_tokens } = req.body;
 
-  console.log(`[proxy] Request: model=${model}, messages=${messages?.length}, max_tokens=${max_tokens}`);
+  // Map model name for Bedrock
+  const resolvedModel = USE_BEDROCK
+    ? (BEDROCK_MODELS[model] || BEDROCK_MODELS["claude-sonnet-4-20250514"])
+    : (model || "claude-sonnet-4-20250514");
+
+  console.log(`[proxy] Request: model=${resolvedModel}, messages=${messages?.length}, max_tokens=${max_tokens}`);
 
   try {
-    const response = await anthropic.messages.create({
-      model: model || "claude-sonnet-4-20250514",
+    const response = await client.messages.create({
+      model: resolvedModel,
       max_tokens: max_tokens || 8192,
       system: system,
       messages: messages,
@@ -52,10 +76,15 @@ app.post("/api/chat", async (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", auth: anthropic._options?.apiKey ? "api_key" : "bedrock" });
+  res.json({ status: "ok", mode: USE_BEDROCK ? "bedrock" : "api_key" });
 });
 
-app.listen(PORT, () => {
-  console.log(`[proxy] Listening on http://localhost:${PORT}`);
-  console.log(`[proxy] Auth mode: ${process.env.ANTHROPIC_API_KEY ? "API Key" : "Bedrock/AWS"}`);
+// Initialize client then start server
+initClient().then(() => {
+  app.listen(PORT, () => {
+    console.log(`[proxy] Listening on http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error("[proxy] Failed to initialize:", err);
+  process.exit(1);
 });

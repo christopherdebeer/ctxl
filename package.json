@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/bedrock-sdk": "^0.26.3",
     "cors": "^2.8.5",
     "express": "^4.21.0"
   },
