@@ -136,6 +136,126 @@ interface AgentMountProps {
   agentPath?: string;
 }
 
+// Agent Toolbar — immune-layer UI providing persistent think/evolve access.
+// Cannot be evolved away: lives in agent-mount.tsx, outside the agent's source.
+function AgentToolbar({ self, act }: { self: AgentSelf; act: (patch: Record<string, any>) => void }) {
+  const [isOpen, setIsOpen] = React.useState(false);
+  const [input, setInput] = React.useState("");
+  const [lastResponse, setLastResponse] = React.useState<string | null>(null);
+
+  const busy = self.isThinking || self.isEvolving;
+
+  const handleThink = async () => {
+    if (!input.trim() || busy) return;
+    const prompt = input.trim();
+    setInput("");
+    setLastResponse("...");
+    const result = await self.think(prompt);
+    setLastResponse(result.content || JSON.stringify(result));
+    if (result.actions) {
+      for (const action of result.actions) act(action);
+    }
+    if (result.shouldEvolve && result.evolveReason) {
+      setLastResponse(prev => (prev || "") + "\\n\\u21bb " + result.evolveReason);
+      await self.evolve(result.evolveReason);
+    }
+  };
+
+  const handleEvolve = async () => {
+    if (busy) return;
+    const prompt = input.trim() || "Evolve to better serve the user based on current context";
+    setInput("");
+    setLastResponse("Evolving...");
+    await self.evolve(prompt);
+    setLastResponse("Evolved. New form is live.");
+  };
+
+  // Collapsed: small floating action button
+  if (!isOpen) {
+    return (
+      <div
+        onClick={() => setIsOpen(true)}
+        title="Agent Tools (think / evolve)"
+        style={{
+          position: "fixed", bottom: 20, right: 20, zIndex: 9999,
+          width: 44, height: 44, borderRadius: "50%",
+          background: busy
+            ? "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)"
+            : "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+          color: "#fff", fontSize: 18, cursor: "pointer",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "all 0.3s ease",
+          opacity: busy ? 1 : 0.7,
+        }}
+      >
+        {busy ? "\\u2026" : "\\u2726"}
+      </div>
+    );
+  }
+
+  // Expanded: prompt bar with think/evolve
+  return (
+    <div style={{
+      position: "fixed", bottom: 16, right: 16, left: 16, zIndex: 9999,
+      background: "#fff", borderRadius: 14,
+      boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
+      border: "1px solid #e0e0e0",
+      padding: 12, maxWidth: 480, marginLeft: "auto",
+    }}>
+      {lastResponse && (
+        <div style={{
+          padding: "8px 12px", marginBottom: 8,
+          background: "#f8f8f8", borderRadius: 8,
+          fontSize: 13, lineHeight: 1.5, maxHeight: 150, overflowY: "auto",
+          whiteSpace: "pre-wrap", color: "#333",
+        }}>
+          {lastResponse}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div
+          onClick={() => { setIsOpen(false); setLastResponse(null); }}
+          style={{ cursor: "pointer", fontSize: 18, color: "#999", padding: "0 4px", lineHeight: 1, userSelect: "none" }}
+        >\\u00d7</div>
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") handleThink(); }}
+          placeholder={busy ? (self.isThinking ? "Thinking..." : "Evolving...") : "Think or evolve..."}
+          disabled={busy}
+          style={{
+            flex: 1, padding: "8px 12px", fontSize: 14, fontFamily: "inherit",
+            border: "2px solid #e0e0e0", borderRadius: 8, outline: "none",
+          }}
+        />
+        <div
+          onClick={handleThink}
+          style={{
+            padding: "8px 14px", fontSize: 13, fontWeight: 600,
+            background: (!input.trim() || busy)
+              ? "#ccc"
+              : "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+            color: "#fff", borderRadius: 8,
+            cursor: (!input.trim() || busy) ? "default" : "pointer",
+            whiteSpace: "nowrap", userSelect: "none",
+          }}
+        >Think</div>
+        <div
+          onClick={handleEvolve}
+          style={{
+            padding: "8px 14px", fontSize: 13, fontWeight: 600,
+            background: busy ? "#ccc" : "#f0f0f0",
+            color: busy ? "#999" : "#555",
+            borderRadius: 8, cursor: busy ? "default" : "pointer",
+            whiteSpace: "nowrap", userSelect: "none",
+          }}
+        >Evolve</div>
+      </div>
+    </div>
+  );
+}
+
 export function AgentMount({ agentPath = "/src/agent.tsx" }: AgentMountProps) {
   let AgentBody = window.__RUNTIME__.AgentModule?.default;
   const [state, act] = useAgentState();
@@ -213,9 +333,12 @@ export function AgentMount({ agentPath = "/src/agent.tsx" }: AgentMountProps) {
   }
 
   return (
-    <AgentErrorBoundary onError={handleError}>
-      <AgentBody state={state} act={act} self={self} />
-    </AgentErrorBoundary>
+    <>
+      <AgentErrorBoundary onError={handleError}>
+        <AgentBody state={state} act={act} self={self} />
+      </AgentErrorBoundary>
+      <AgentToolbar self={self} act={act} />
+    </>
   );
 }
 `;
