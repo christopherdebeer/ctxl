@@ -559,7 +559,7 @@ export default function Agent({ state, act, self }: AgentProps) {
 `;
 
 // ---- Assembled seed map ----
-export const DEFAULT_SEEDS = new Map([
+export const DEFAULT_SEEDS: Map<string, string> = new Map([
   ["/src/main.tsx", SEED_MAIN],
   ["/src/useAgentState.ts", SEED_USE_AGENT_STATE],
   ["/src/agent-mount.tsx", SEED_AGENT_MOUNT],

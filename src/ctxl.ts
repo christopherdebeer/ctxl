@@ -6,7 +6,7 @@
  * (rewrite their own source code when current capabilities are insufficient).
  *
  * Usage as ES module:
- *   import { create, DEFAULT_SEEDS } from './ctxl.js';
+ *   import { create, DEFAULT_SEEDS } from './ctxl';
  *   const system = await create({ target: el, apiMode: 'proxy' });
  *
  * Usage as script:
@@ -18,36 +18,48 @@
  * Requirements — the host page must include an import map for the VFS runtime:
  *   react, react/jsx-runtime, react-dom/client, react-refresh/runtime, styled-components
  */
+import type { CreateOptions, CreateResult } from "./types";
 
 // Re-export all primitives
-export { createIDB } from "./idb.js";
-export { injectReactRefresh } from "./refresh.js";
-export { createVFSPlugin } from "./vfs-plugin.js";
-export { createStateStore } from "./state.js";
-export { buildThinkPrompt, buildEvolvePrompt } from "./prompts.js";
-export { createRuntime } from "./runtime.js";
-export { DEFAULT_SEEDS } from "./seeds.js";
+export { createIDB } from "./idb";
+export { injectReactRefresh } from "./refresh";
+export { createVFSPlugin } from "./vfs-plugin";
+export { createStateStore } from "./state";
+export { buildThinkPrompt, buildEvolvePrompt } from "./prompts";
+export { createRuntime } from "./runtime";
+export { DEFAULT_SEEDS } from "./seeds";
+
+// Re-export types
+export type {
+  IDB,
+  VFSRow,
+  StateStore,
+  AgentMemory,
+  StateMeta,
+  RuntimeConfig,
+  ApiMode,
+  LLMResult,
+  ThinkResult,
+  RuntimeCallbacks,
+  FilePatch,
+  EsbuildPlugin,
+  Esbuild,
+  Runtime,
+  RuntimeOptions,
+  CreateOptions,
+  CreateResult,
+} from "./types";
 
 // Imports needed by create()
-import { createIDB } from "./idb.js";
-import { createStateStore } from "./state.js";
-import { createRuntime } from "./runtime.js";
-import { DEFAULT_SEEDS } from "./seeds.js";
+import { createIDB } from "./idb";
+import { createStateStore } from "./state";
+import { createRuntime } from "./runtime";
+import { DEFAULT_SEEDS } from "./seeds";
 
 /**
  * High-level API: create and boot a complete agent system.
- *
- * @param options.target      DOM element to mount the agent into (must have id="root" or one will be set)
- * @param options.seeds       VFS seed files (default: DEFAULT_SEEDS with think/evolve agent)
- * @param options.apiMode     'none' | 'anthropic' | 'proxy'
- * @param options.apiKey      Anthropic API key (for apiMode 'anthropic')
- * @param options.proxyUrl    Proxy server URL (for apiMode 'proxy')
- * @param options.esbuildUrl  CDN URL for esbuild-wasm ESM module
- * @param options.esbuildWasmUrl  CDN URL for esbuild.wasm binary
- * @param options.dbName      IndexedDB database name
- * @param options.callbacks   {onStatus, onMode, onFileChange, onBuildStart, onBuildEnd, onError}
  */
-export async function create(options = {}) {
+export async function create(options: CreateOptions = {}): Promise<CreateResult> {
   const {
     target,
     seeds = DEFAULT_SEEDS,
@@ -71,7 +83,7 @@ export async function create(options = {}) {
   window.__AGENT_STATE__ = stateStore;
 
   // 4. Load or seed VFS
-  const files = new Map();
+  const files = new Map<string, string>();
   const rows = await idb.getAll();
   if (rows.length === 0) {
     for (const [p, t] of seeds.entries()) {

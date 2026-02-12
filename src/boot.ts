@@ -1,46 +1,47 @@
 /**
- * boot.js — Dev environment entry point for index.html
+ * boot.ts — Dev environment entry point for index.html
  *
  * Imports from the ctxl module system and wires everything
  * to the dev UI: file browser, editor, settings, keyboard shortcuts, drawer.
  */
 
 import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
-import { createIDB } from "./idb.js";
-import { createStateStore } from "./state.js";
-import { createRuntime } from "./runtime.js";
-import { DEFAULT_SEEDS } from "./seeds.js";
+import { createIDB } from "./idb";
+import { createStateStore } from "./state";
+import { createRuntime } from "./runtime";
+import { DEFAULT_SEEDS } from "./seeds";
+import type { Runtime, IDB } from "./types";
 
 // ============================================================
 // DOM references
 // ============================================================
 
-const statusEl    = document.getElementById("status");
-const editorEl    = document.getElementById("editor");
-const filesEl     = document.getElementById("files");
-const runBtn      = document.getElementById("runBtn");
-const resetBtn    = document.getElementById("resetBtn");
-const modePill    = document.getElementById("modePill");
-const refreshPill = document.getElementById("refreshPill");
+const statusEl = document.getElementById("status")!;
+const editorEl = document.getElementById("editor") as HTMLTextAreaElement;
+const filesEl = document.getElementById("files")!;
+const runBtn = document.getElementById("runBtn")!;
+const resetBtn = document.getElementById("resetBtn")!;
+const modePill = document.getElementById("modePill")!;
+const refreshPill = document.getElementById("refreshPill")!;
 
-const devToggle      = document.getElementById("devToggle");
-const leftDrawer     = document.getElementById("left");
-const drawerBackdrop = document.getElementById("drawerBackdrop");
+const devToggle = document.getElementById("devToggle")!;
+const leftDrawer = document.getElementById("left")!;
+const drawerBackdrop = document.getElementById("drawerBackdrop")!;
 
-const settingsBtn    = document.getElementById("settingsBtn");
-const settingsPanel  = document.getElementById("settings");
-const apiModeSelect  = document.getElementById("apiModeSelect");
-const apiKeyInput    = document.getElementById("apiKeyInput");
-const apiKeyRow      = document.getElementById("apiKeyRow");
-const proxyUrlInput  = document.getElementById("proxyUrlInput");
-const proxyUrlRow    = document.getElementById("proxyUrlRow");
-const saveSettingsBtn = document.getElementById("saveSettingsBtn");
-const settingsStatus = document.getElementById("settingsStatus");
+const settingsBtn = document.getElementById("settingsBtn")!;
+const settingsPanel = document.getElementById("settings") as HTMLElement;
+const apiModeSelect = document.getElementById("apiModeSelect") as HTMLSelectElement;
+const apiKeyInput = document.getElementById("apiKeyInput") as HTMLInputElement;
+const apiKeyRow = document.getElementById("apiKeyRow") as HTMLElement;
+const proxyUrlInput = document.getElementById("proxyUrlInput") as HTMLInputElement;
+const proxyUrlRow = document.getElementById("proxyUrlRow") as HTMLElement;
+const saveSettingsBtn = document.getElementById("saveSettingsBtn")!;
+const settingsStatus = document.getElementById("settingsStatus")!;
 
-const viewTabs = document.querySelectorAll(".viewTab");
-const rootEl   = document.getElementById("root");
-const aboutEl  = document.getElementById("about");
-const aboutBody = aboutEl.querySelector(".markdown-body");
+const viewTabs = document.querySelectorAll<HTMLElement>(".viewTab");
+const rootEl = document.getElementById("root")!;
+const aboutEl = document.getElementById("about")!;
+const aboutBody = aboutEl.querySelector(".markdown-body") as HTMLElement;
 
 // ============================================================
 // State
@@ -53,7 +54,7 @@ let aboutLoaded = false;
 // Dev drawer
 // ============================================================
 
-function openDrawer()  { leftDrawer.classList.add("open"); drawerBackdrop.classList.add("visible"); devToggle.classList.add("active"); }
+function openDrawer() { leftDrawer.classList.add("open"); drawerBackdrop.classList.add("visible"); devToggle.classList.add("active"); }
 function closeDrawer() { leftDrawer.classList.remove("open"); drawerBackdrop.classList.remove("visible"); devToggle.classList.remove("active"); }
 function toggleDrawer() { leftDrawer.classList.contains("open") ? closeDrawer() : openDrawer(); }
 
@@ -64,7 +65,7 @@ drawerBackdrop.onclick = closeDrawer;
 // Status helpers
 // ============================================================
 
-function setMode(mode, cls = "") {
+function setMode(mode: string, cls = "") {
   modePill.textContent = mode;
   modePill.className = "pill " + cls;
   if (mode === "building" || mode === "importing") {
@@ -76,7 +77,7 @@ function setMode(mode, cls = "") {
   }
 }
 
-function logStatus(text) {
+function logStatus(text: string) {
   statusEl.textContent = text;
 }
 
@@ -84,7 +85,9 @@ function logStatus(text) {
 // File browser & editor
 // ============================================================
 
-let files; // assigned during boot
+let files = new Map<string, string>();
+let idb: IDB;
+let runtime: Runtime;
 
 function renderFileButtons() {
   filesEl.innerHTML = "";
@@ -106,12 +109,12 @@ function flushEditorToVFS() {
   const current = files.get(activePath) ?? "";
   if (editorEl.value !== current) {
     files.set(activePath, editorEl.value);
-    idb.put(activePath, editorEl.value).catch(e => console.warn("flush failed:", e));
+    idb.put(activePath, editorEl.value).catch((e: unknown) => console.warn("flush failed:", e));
   }
 }
 
 function updateUnsavedIndicator() {
-  if (!files) return;
+  if (files.size === 0) return;
   const saved = files.get(activePath) ?? "";
   if (editorEl.value !== saved) {
     devToggle.classList.add("unsaved");
@@ -149,7 +152,7 @@ settingsBtn.onclick = () => {
 apiModeSelect.onchange = updateSettingsUI;
 
 saveSettingsBtn.onclick = () => {
-  runtime.config.apiMode = apiModeSelect.value;
+  runtime.config.apiMode = apiModeSelect.value as "none" | "anthropic" | "proxy";
   runtime.config.apiKey = apiKeyInput.value;
   runtime.config.proxyUrl = proxyUrlInput.value;
   runtime.saveConfig();
@@ -169,12 +172,12 @@ async function loadAboutContent() {
     const md = await res.text();
     aboutBody.innerHTML = marked.parse(md);
     aboutLoaded = true;
-  } catch (err) {
+  } catch (err: any) {
     aboutBody.innerHTML = `<p style="color:#c00">Failed to load documentation: ${err.message}</p>`;
   }
 }
 
-function setView(view) {
+function setView(view: string) {
   viewTabs.forEach(tab => tab.classList.toggle("active", tab.dataset.view === view));
   if (view === "about") {
     rootEl.classList.add("hidden");
@@ -186,7 +189,7 @@ function setView(view) {
   }
 }
 
-viewTabs.forEach(tab => { tab.onclick = () => setView(tab.dataset.view); });
+viewTabs.forEach(tab => { tab.onclick = () => setView(tab.dataset.view!); });
 
 // ============================================================
 // Keyboard shortcuts
@@ -210,14 +213,14 @@ const defaultProxyUrl = (location.hostname === "localhost" || location.hostname 
   : "/api/chat";
 
 // 1. IndexedDB
-const idb = createIDB();
+idb = createIDB();
 
 // 2. State store
 const stateStore = createStateStore();
 window.__AGENT_STATE__ = stateStore;
 
 // 3. Load or seed VFS
-files = new Map();
+files = new Map<string, string>();
 const rows = await idb.getAll();
 if (rows.length === 0) {
   for (const [p, t] of DEFAULT_SEEDS.entries()) {
@@ -239,7 +242,7 @@ const config = {
   proxyUrl: savedConfig.proxyUrl || defaultProxyUrl,
 };
 
-const runtime = createRuntime({
+runtime = createRuntime({
   esbuild,
   idb,
   stateStore,
@@ -248,7 +251,7 @@ const runtime = createRuntime({
   callbacks: {
     onStatus: logStatus,
     onMode: setMode,
-    onFileChange(path, text) {
+    onFileChange(path: string, text: string) {
       if (path === activePath) editorEl.value = text;
     },
   },

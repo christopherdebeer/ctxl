@@ -2,10 +2,12 @@
  * IndexedDB helpers for VFS persistence.
  * Returns a simple {getAll, put, clear} interface.
  */
-export function createIDB(dbName = "ctxl_vfs") {
+import type { IDB, VFSRow } from "./types";
+
+export function createIDB(dbName = "ctxl_vfs"): IDB {
   const STORE = "files";
 
-  function openDB() {
+  function openDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(dbName, 1);
       req.onupgradeneeded = () => {
@@ -19,17 +21,17 @@ export function createIDB(dbName = "ctxl_vfs") {
     });
   }
 
-  async function getAll() {
+  async function getAll(): Promise<VFSRow[]> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readonly");
       const req = tx.objectStore(STORE).getAll();
-      req.onsuccess = () => resolve(req.result || []);
+      req.onsuccess = () => resolve((req.result as VFSRow[]) || []);
       req.onerror = () => reject(req.error);
     });
   }
 
-  async function put(path, text) {
+  async function put(path: string, text: string): Promise<void> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
@@ -39,7 +41,7 @@ export function createIDB(dbName = "ctxl_vfs") {
     });
   }
 
-  async function clear() {
+  async function clear(): Promise<void> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
