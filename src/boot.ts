@@ -31,6 +31,7 @@ const drawerBackdrop = document.getElementById("drawerBackdrop")!;
 const settingsBtn = document.getElementById("settingsBtn")!;
 const settingsPanel = document.getElementById("settings") as HTMLElement;
 const apiModeSelect = document.getElementById("apiModeSelect") as HTMLSelectElement;
+const modelSelect = document.getElementById("modelSelect") as HTMLSelectElement;
 const apiKeyInput = document.getElementById("apiKeyInput") as HTMLInputElement;
 const apiKeyRow = document.getElementById("apiKeyRow") as HTMLElement;
 const proxyUrlInput = document.getElementById("proxyUrlInput") as HTMLInputElement;
@@ -138,6 +139,7 @@ function updateSettingsUI() {
 function loadSettingsUI() {
   const cfg = runtime.config;
   apiModeSelect.value = cfg.apiMode;
+  modelSelect.value = cfg.model || "claude-sonnet-4-5-20250929";
   apiKeyInput.value = cfg.apiKey;
   proxyUrlInput.value = cfg.proxyUrl;
   updateSettingsUI();
@@ -153,6 +155,7 @@ apiModeSelect.onchange = updateSettingsUI;
 
 saveSettingsBtn.onclick = () => {
   runtime.config.apiMode = apiModeSelect.value as "none" | "anthropic" | "proxy";
+  runtime.config.model = modelSelect.value;
   runtime.config.apiKey = apiKeyInput.value;
   runtime.config.proxyUrl = proxyUrlInput.value;
   runtime.saveConfig();
@@ -198,7 +201,7 @@ viewTabs.forEach(tab => { tab.onclick = () => setView(tab.dataset.view!); });
 window.addEventListener("keydown", (e) => {
   const isSave = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s";
   const isToggle = (e.ctrlKey || e.metaKey) && (e.key === "\\" || e.key.toLowerCase() === "e");
-  if (isSave) { e.preventDefault(); flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S"); }
+  if (isSave) { e.preventDefault(); flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S").catch(() => {}); }
   if (isToggle) { e.preventDefault(); toggleDrawer(); }
   if (e.key === "Escape" && leftDrawer.classList.contains("open")) closeDrawer();
 });
@@ -240,6 +243,7 @@ const config = {
   apiMode: savedConfig.apiMode || "none",
   apiKey: savedConfig.apiKey || "",
   proxyUrl: savedConfig.proxyUrl || defaultProxyUrl,
+  model: savedConfig.model || "claude-sonnet-4-5-20250929",
 };
 
 runtime = createRuntime({
@@ -253,6 +257,16 @@ runtime = createRuntime({
     onMode: setMode,
     onFileChange(path: string, text: string) {
       if (path === activePath) editorEl.value = text;
+      // Re-render file browser when new files appear (e.g., via compose)
+      renderFileButtons();
+    },
+    onError(err: unknown) {
+      const error = err as Error;
+      stateStore.set({
+        _buildError: error.message || String(err),
+        _buildErrorStack: error.stack,
+        _buildErrorTime: Date.now(),
+      });
     },
   },
 });
@@ -272,7 +286,7 @@ if (refreshOk) {
 await runtime.initEsbuild();
 
 // 7. Wire up buttons
-runBtn.onclick = () => { flushEditorToVFS(); runtime.buildAndRun("button"); };
+runBtn.onclick = () => { flushEditorToVFS(); runtime.buildAndRun("button").catch(() => {}); };
 resetBtn.onclick = () => runtime.reset();
 
 // 8. First build

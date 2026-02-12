@@ -39,6 +39,7 @@ export interface RuntimeConfig {
   apiMode: ApiMode;
   apiKey: string;
   proxyUrl: string;
+  model: string;
 }
 
 // ---- LLM ----
@@ -98,6 +99,17 @@ export interface Esbuild {
 
 // ---- Runtime ----
 
+export interface ComposeResult {
+  error: string | null;
+  source: string | null;
+  path: string;
+}
+
+export interface ConversationMessage {
+  role: "user" | "agent";
+  content: string;
+}
+
 export interface Runtime {
   files: Map<string, string>;
   disposers: Array<() => void>;
@@ -108,8 +120,9 @@ export interface Runtime {
   _mounted: boolean;
   saveConfig(): void;
   _callLLM(systemPrompt: string, userPrompt: string): Promise<LLMResult>;
-  think(prompt: string, agentPath: string): Promise<ThinkResult>;
+  think(prompt: string, agentPath: string, history?: ConversationMessage[]): Promise<ThinkResult>;
   evolve(prompt: string, agentPath: string): Promise<LLMResult>;
+  compose(path: string, purpose: string, parentPath?: string): Promise<ComposeResult>;
   reason(prompt: string, agentPath: string): Promise<LLMResult>;
   applyPatch(patches: FilePatch[]): Promise<void>;
   runDisposers(): void;
@@ -140,6 +153,7 @@ export interface CreateOptions {
   apiMode?: ApiMode;
   apiKey?: string;
   proxyUrl?: string;
+  model?: string;
   esbuildUrl?: string;
   esbuildWasmUrl?: string;
   dbName?: string;

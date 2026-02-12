@@ -21,10 +21,15 @@ const USE_BEDROCK = !process.env.ANTHROPIC_API_KEY;
 
 // Bedrock model mapping (API model -> Bedrock model ID)
 const BEDROCK_MODELS = {
+  "claude-opus-4-6": "us.anthropic.claude-opus-4-6-v1",
+  "claude-sonnet-4-5-20250929": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claude-opus-4-5-20251101": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+  "claude-opus-4-1-20250805": "us.anthropic.claude-opus-4-1-20250805-v1:0",
   "claude-sonnet-4-20250514": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-  "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0 ",
-  "claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-  "claude-3-5-haiku-20241022": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+  "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0",
+  "claude-3-7-sonnet-20250219": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+  "claude-3-haiku-20240307": "us.anthropic.claude-3-haiku-20240307-v1:0",
 };
 
 let client;
@@ -48,24 +53,34 @@ app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 app.post("/api/chat", async (req, res) => {
-  const { system, messages, model, max_tokens } = req.body;
+  const { system, messages, model, max_tokens, tools, tool_choice } = req.body;
 
   // Map model name for Bedrock
   const resolvedModel = USE_BEDROCK
-    ? (BEDROCK_MODELS[model] || BEDROCK_MODELS["claude-sonnet-4-20250514"])
-    : (model || "claude-sonnet-4-20250514");
+    ? (BEDROCK_MODELS[model] || BEDROCK_MODELS["claude-sonnet-4-5-20250929"])
+    : (model || "claude-sonnet-4-5-20250929");
 
-  console.log(`[proxy] Request: model=${resolvedModel}, messages=${messages?.length}, max_tokens=${max_tokens}`);
+  console.log(`[proxy] Request: model=${resolvedModel}, messages=${messages?.length}, max_tokens=${max_tokens}, tools=${tools?.length || 0}`);
 
   try {
-    const response = await client.messages.create({
+    const params = {
       model: resolvedModel,
       max_tokens: max_tokens || 8192,
       system: system,
       messages: messages,
-    });
+    };
 
-    console.log(`[proxy] Response: ${response.content?.[0]?.text?.length || 0} chars`);
+    // Pass through tools and tool_choice if provided
+    if (tools) params.tools = tools;
+    if (tool_choice) params.tool_choice = tool_choice;
+
+    const response = await client.messages.create(params);
+
+    const firstBlock = response.content?.[0];
+    const charCount = firstBlock?.type === "tool_use"
+      ? JSON.stringify(firstBlock.input).length
+      : (firstBlock?.text?.length || 0);
+    console.log(`[proxy] Response: ${charCount} chars (${firstBlock?.type || "?"})`);
     res.json(response);
   } catch (err) {
     console.error("[proxy] Error:", err.message);

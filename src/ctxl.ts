@@ -25,7 +25,7 @@ export { createIDB } from "./idb";
 export { injectReactRefresh } from "./refresh";
 export { createVFSPlugin } from "./vfs-plugin";
 export { createStateStore } from "./state";
-export { buildThinkPrompt, buildEvolvePrompt } from "./prompts";
+export { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt } from "./prompts";
 export { createRuntime } from "./runtime";
 export { DEFAULT_SEEDS } from "./seeds";
 
@@ -40,6 +40,8 @@ export type {
   ApiMode,
   LLMResult,
   ThinkResult,
+  ComposeResult,
+  ConversationMessage,
   RuntimeCallbacks,
   FilePatch,
   EsbuildPlugin,
@@ -66,6 +68,7 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
     apiMode = "none",
     apiKey = "",
     proxyUrl = "/api/chat",
+    model = "claude-sonnet-4-5-20250929",
     esbuildUrl = "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js",
     esbuildWasmUrl = "https://unpkg.com/esbuild-wasm@0.24.2/esbuild.wasm",
     dbName = "ctxl_vfs",
@@ -95,7 +98,7 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
   }
 
   // 5. Create runtime
-  const config = { apiMode, apiKey, proxyUrl };
+  const config = { apiMode, apiKey, proxyUrl, model };
   const runtime = createRuntime({ esbuild, idb, stateStore, files, config, callbacks });
   window.__RUNTIME__ = runtime;
 

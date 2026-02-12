@@ -6,6 +6,60 @@
  */
 import type { AgentMemory } from "./types";
 
+export function buildComposePrompt(
+  targetPath: string,
+  purpose: string,
+  parentPath: string | undefined,
+  parentSource: string | undefined,
+  existingFiles: string[],
+  currentState: AgentMemory,
+): string {
+  return `You are a component COMPOSER within the ctxl agent system.
+
+TASK: Create a NEW React component file at ${targetPath} that serves a specific purpose.
+Return ONLY the complete source code. NO markdown fences. NO explanation. Just the code starting with imports.
+
+PURPOSE:
+${purpose}
+
+${parentPath && parentSource ? `PARENT COMPONENT (${parentPath}) — will import and render you:
+${parentSource}` : "No parent context provided."}
+
+EXISTING VFS FILES:
+${existingFiles.join(", ")}
+
+AVAILABLE IMPORTS:
+- React, useState, useEffect, useRef, useCallback, useMemo (from "react")
+- styled from "styled-components" (CSS-in-JS)
+- { useAgentState, useAgentMeta } from "./useAgentState" — access shared external state
+- { useAgentSelf } from "./useAgentState" — get a scoped self for YOUR file path
+
+MAKING YOURSELF AGENTIC:
+You can become a self-aware, self-modifying component by using:
+  const self = useAgentSelf("${targetPath}");
+  // self.think(prompt) — reason within current form
+  // self.evolve(prompt) — rewrite your own source
+  // self.compose(path, purpose) — spawn child components
+  // self.source — your current source code
+  // self.isThinking, self.isEvolving — loading states
+
+Only use useAgentSelf if the component genuinely benefits from agency (reasoning, self-modification).
+Simple display components or pure UI elements should NOT use it.
+
+PROPS CONTRACT:
+Your parent will pass you props. Design your component to accept reasonable props for your purpose.
+Export your component as the default export. Name it with PascalCase.
+
+STATE RULES:
+- Use props for purpose/configuration passed by parent
+- Use useState for local UI state
+- Use useAgentState() for shared cross-component persistent state
+- Use act() to update shared state
+
+CURRENT SHARED STATE:
+${JSON.stringify(currentState, null, 2)}`;
+}
+
 export function buildThinkPrompt(
   agentPath: string,
   currentSource: string,
@@ -14,28 +68,23 @@ export function buildThinkPrompt(
   return `You are an AI agent EMBODIED as a React component. You ARE the component.
 
 RIGHT NOW you are THINKING — reasoning within your current form.
-You must NOT return source code. Return a JSON decision.
+You must NOT return source code. Use the think_response tool to return your structured response.
 
 Your capabilities are defined by your current source code below.
 If you can handle the request within these capabilities, respond with content.
 If you CANNOT handle it and need new capabilities, set shouldEvolve to true.
 
-RESPONSE FORMAT (JSON only, no markdown fences, no explanation):
-{
-  "content": "Your response text — what you want to say or display",
-  "actions": [{"key": "value"}],
-  "shouldEvolve": false,
-  "evolveReason": ""
-}
+RESPONSE GUIDELINES:
+- "content": Your text response — what you want to say or display to the user
+- "actions": Array of state patches to apply via act(). Each object is merged into external state.
+- "structured": Any structured data (tasks, configurations, analysis). Used by the UI to render cards, lists, etc.
+- "shouldEvolve": Set true ONLY if you need capabilities your current source code doesn't have
+- "evolveReason": If shouldEvolve is true, explain what new capabilities you need
 
-- "content" (required): Your text response to the user
-- "actions" (optional): Array of state patches to apply via act(). Each object is merged into external state.
-- "shouldEvolve" (optional): Set true ONLY if you need capabilities your current source code doesn't have (e.g., a chart, a game, a form you can't render)
-- "evolveReason" (optional): If shouldEvolve is true, explain what new capabilities you need
-
-AGENT TOOLS (always available via props — a persistent toolbar in the mount layer also exposes these):
-- self.think(prompt): reason within current form, returns { content, actions, shouldEvolve }
+AGENT TOOLS (always available via props):
+- self.think(prompt): reason within current form (what's happening now)
 - self.evolve(prompt): rewrite your own source code via LLM
+- self.compose(path, purpose): create a new child component file
 - self.mutate(source): directly replace your source code
 - act(patch): update persistent external state
 
