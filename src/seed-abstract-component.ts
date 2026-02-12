@@ -1,0 +1,275 @@
+/**
+ * Seed: /src/ctxl/abstract-component.tsx — The AbstractComponent wrapper.
+ *
+ * Handles:
+ * - Identity resolution (id -> VFS source)
+ * - Authoring on first mount (LLM generates source)
+ * - Re-authoring on shape change
+ * - Error boundary with rollback
+ * - Rendering the authored component with inputs/tools
+ */
+
+export const SEED_ABSTRACT_COMPONENT_SOURCE = `import React, { useState, useEffect, useRef, useCallback, Component } from "react";
+
+// ---- Error Boundary ----
+
+interface EBProps {
+  componentId: string;
+  children: React.ReactNode;
+  onCrash: (error: Error) => void;
+}
+
+interface EBState {
+  hasError: boolean;
+  error: Error | null;
+  crashCount: number;
+}
+
+class ComponentErrorBoundary extends Component<EBProps, EBState> {
+  state: EBState = { hasError: false, error: null, crashCount: 0 };
+
+  static getDerivedStateFromError(error: Error): Partial<EBState> {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error) {
+    const next = this.state.crashCount + 1;
+    this.setState({ crashCount: next });
+    console.error("[AC:" + this.props.componentId + "] Crash #" + next, error);
+    this.props.onCrash(error);
+  }
+
+  reset = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      const { error, crashCount } = this.state;
+      return React.createElement("div", {
+        style: {
+          padding: "20px", margin: "10px", border: "1px solid #c00",
+          borderRadius: "8px", background: "#1a0000", color: "#f88",
+          fontFamily: "monospace", fontSize: "13px",
+        }
+      },
+        React.createElement("div", { style: { fontWeight: "bold", marginBottom: "8px" } },
+          "Component error [" + this.props.componentId + "] (crash #" + crashCount + ")"
+        ),
+        React.createElement("pre", { style: { whiteSpace: "pre-wrap", color: "#faa", margin: "8px 0" } },
+          error?.message || "Unknown error"
+        ),
+        React.createElement("button", {
+          onClick: this.reset,
+          style: {
+            padding: "6px 16px", background: "#333", color: "#fff",
+            border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
+          },
+        }, "Retry"),
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ---- Shape comparison ----
+
+function getShape(obj: Record<string, any> | undefined): string {
+  if (!obj) return "";
+  return Object.keys(obj).sort().join(",");
+}
+
+function getToolShape(tools: any[] | undefined): string {
+  if (!tools) return "";
+  return tools.map((t: any) => t.name).sort().join(",");
+}
+
+// ---- AbstractComponent ----
+
+export function AbstractComponent({
+  id,
+  inputs = {},
+  tools = [],
+  guidelines,
+  fallback,
+  onToolCall,
+}: {
+  id: string;
+  inputs?: Record<string, any>;
+  tools?: Array<{ name: string; description: string; schema?: Record<string, string> }>;
+  guidelines?: string;
+  fallback?: React.ReactNode;
+  onToolCall?: (name: string, args: any) => void;
+}) {
+  const [phase, setPhase] = useState<"checking" | "authoring" | "ready" | "error">("checking");
+  const [errorMsg, setErrorMsg] = useState("");
+  const authoringRef = useRef(false);
+  const shapeRef = useRef({ inputs: getShape(inputs), tools: getToolShape(tools) });
+
+  // Get the compiled component from the registry
+  const registry = (window as any).__COMPONENTS__ || {};
+  const CompiledComponent = registry[id] || null;
+
+  // Check if shape changed (triggers re-authoring)
+  const currentInputShape = getShape(inputs);
+  const currentToolShape = getToolShape(tools);
+  const shapeChanged =
+    phase === "ready" &&
+    (currentInputShape !== shapeRef.current.inputs || currentToolShape !== shapeRef.current.tools);
+
+  // Author or re-author when needed
+  useEffect(() => {
+    if (authoringRef.current) return;
+
+    // Already have the component and shape hasn't changed
+    if (CompiledComponent && !shapeChanged) {
+      shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
+      setPhase("ready");
+      return;
+    }
+
+    // Need to author (or re-author)
+    const runtime = (window as any).__RUNTIME__;
+    if (!runtime) {
+      setPhase("error");
+      setErrorMsg("No runtime available");
+      return;
+    }
+
+    authoringRef.current = true;
+    setPhase("authoring");
+
+    (async () => {
+      try {
+        const vfsPath = "/src/ac/" + id + ".tsx";
+        const existingSource = shapeChanged ? runtime.files.get(vfsPath) : undefined;
+
+        // Call LLM to author the component
+        const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, existingSource);
+        const messages = [{ role: "user", content: "Author this component." }];
+        const response = await runtime.callLLM(system, messages);
+
+        if (response.error) {
+          setPhase("error");
+          setErrorMsg(response.error);
+          authoringRef.current = false;
+          return;
+        }
+
+        // Extract source from response
+        let source = "";
+        const data = response.data;
+        if (data?.content) {
+          const textBlock = data.content.find((b: any) => b.type === "text");
+          source = textBlock?.text || "";
+        }
+
+        // Strip markdown fences if present
+        const fenceMatch = source.match(/\`\`\`(?:tsx?|jsx?)?\\s*\\n([\\s\\S]*?)\`\`\`/);
+        if (fenceMatch) source = fenceMatch[1];
+        source = source.trim();
+
+        if (!source) {
+          setPhase("error");
+          setErrorMsg("Authoring produced empty source");
+          authoringRef.current = false;
+          return;
+        }
+
+        // Write to VFS and rebuild
+        runtime.files.set(vfsPath, source);
+        await runtime.idb.put(vfsPath, source);
+
+        // Update the component registry file
+        runtime.regenerateRegistry();
+
+        // Rebuild — after this, window.__COMPONENTS__[id] will exist
+        await runtime.buildAndRun("author:" + id);
+
+        shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
+        setPhase("ready");
+      } catch (err: any) {
+        setPhase("error");
+        setErrorMsg(err.message || String(err));
+      } finally {
+        authoringRef.current = false;
+      }
+    })();
+  }, [id, CompiledComponent, shapeChanged, currentInputShape, currentToolShape]);
+
+  // Error boundary crash handler
+  const handleCrash = useCallback((error: Error) => {
+    console.error("[AC:" + id + "] Component crashed:", error.message);
+    // Future: rollback from mutation history
+  }, [id]);
+
+  // Handle tool calls including __reshape
+  const handleToolCall = useCallback((name: string, args: any) => {
+    if (name === "__reshape") {
+      // Trigger re-authoring
+      shapeRef.current = { inputs: "", tools: "" }; // force shape mismatch
+      setPhase("checking"); // will trigger re-author effect
+      return;
+    }
+    if (onToolCall) onToolCall(name, args);
+  }, [onToolCall]);
+
+  // Render states
+  if (phase === "error") {
+    return React.createElement("div", {
+      style: {
+        padding: "20px", margin: "10px", border: "1px solid #c00",
+        borderRadius: "8px", background: "#1a0000", color: "#f88",
+        fontFamily: "monospace", fontSize: "13px",
+      }
+    },
+      React.createElement("div", { style: { fontWeight: "bold", marginBottom: "8px" } },
+        "Authoring failed [" + id + "]"
+      ),
+      React.createElement("pre", { style: { whiteSpace: "pre-wrap", color: "#faa" } }, errorMsg),
+      React.createElement("button", {
+        onClick: () => { setPhase("checking"); setErrorMsg(""); },
+        style: {
+          marginTop: "8px", padding: "6px 16px", background: "#333",
+          color: "#fff", border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
+        },
+      }, "Retry"),
+    );
+  }
+
+  if (phase === "authoring" || phase === "checking" || !CompiledComponent) {
+    return (fallback || React.createElement("div", {
+      style: {
+        padding: "40px", textAlign: "center", color: "#888",
+        fontFamily: "system-ui", fontSize: "14px",
+      }
+    },
+      React.createElement("div", {
+        style: {
+          display: "inline-block", width: "20px", height: "20px",
+          border: "2px solid #444", borderTopColor: "#888",
+          borderRadius: "50%", animation: "spin 0.8s linear infinite",
+        }
+      }),
+      React.createElement("div", { style: { marginTop: "12px" } },
+        phase === "authoring" ? "Authoring " + id + "..." : "Loading..."
+      ),
+      React.createElement("style", {},
+        "@keyframes spin { to { transform: rotate(360deg); } }"
+      ),
+    ));
+  }
+
+  // Render the authored component
+  return React.createElement(ComponentErrorBoundary, {
+    componentId: id,
+    onCrash: handleCrash,
+  },
+    React.createElement(CompiledComponent, {
+      inputs,
+      tools,
+      onToolCall: handleToolCall,
+    }),
+  );
+}
+`;

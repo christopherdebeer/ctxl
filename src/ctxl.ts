@@ -25,9 +25,12 @@ export { createIDB } from "./idb";
 export { injectReactRefresh } from "./refresh";
 export { createVFSPlugin } from "./vfs-plugin";
 export { createStateStore } from "./state";
-export { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt } from "./prompts";
+export { createAtomRegistry } from "./atoms";
+export { callLLM, extractText, extractToolUse } from "./llm";
+export { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt, buildAuthoringPrompt, buildReasoningContext } from "./prompts";
 export { createRuntime } from "./runtime";
 export { DEFAULT_SEEDS } from "./seeds";
+export { V2_SEEDS } from "./seeds-v2";
 
 // Re-export types
 export type {
@@ -50,13 +53,18 @@ export type {
   RuntimeOptions,
   CreateOptions,
   CreateResult,
+  ToolDef,
+  ReasoningResult,
+  MutationRecord,
 } from "./types";
 
 // Imports needed by create()
 import { createIDB } from "./idb";
 import { createStateStore } from "./state";
+import { createAtomRegistry } from "./atoms";
 import { createRuntime } from "./runtime";
 import { DEFAULT_SEEDS } from "./seeds";
+import { V2_SEEDS } from "./seeds-v2";
 
 /**
  * High-level API: create and boot a complete agent system.
@@ -81,20 +89,25 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
   // 2. IndexedDB
   const idb = createIDB(dbName);
 
-  // 3. State store
+  // 3. State store + atom registry
   const stateStore = createStateStore();
   window.__AGENT_STATE__ = stateStore;
+
+  const atomRegistry = createAtomRegistry();
+  await atomRegistry.hydrate(idb);
+  (window as any).__ATOMS__ = atomRegistry;
 
   // 4. Load or seed VFS
   const files = new Map<string, string>();
   const rows = await idb.getAll();
-  if (rows.length === 0) {
+  const vfsRows = rows.filter(r => !r.path.startsWith("__atom:"));
+  if (vfsRows.length === 0) {
     for (const [p, t] of seeds.entries()) {
       files.set(p, t);
       await idb.put(p, t);
     }
   } else {
-    for (const r of rows) files.set(r.path, r.text);
+    for (const r of vfsRows) files.set(r.path, r.text);
   }
 
   // 5. Create runtime
@@ -113,7 +126,14 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
   return { runtime, files, stateStore, idb };
 }
 
+/**
+ * High-level v2 API: create a system using AbstractComponent seeds.
+ */
+export async function createV2(options: Omit<CreateOptions, "seeds"> = {}): Promise<CreateResult> {
+  return create({ ...options, seeds: V2_SEEDS });
+}
+
 // Register on window for script-tag usage
 if (typeof window !== "undefined") {
-  window.ctxl = { create, createRuntime, createStateStore, createIDB, DEFAULT_SEEDS };
+  window.ctxl = { create, createV2, createRuntime, createStateStore, createAtomRegistry, createIDB, DEFAULT_SEEDS, V2_SEEDS };
 }
