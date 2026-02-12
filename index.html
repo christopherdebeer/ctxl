@@ -410,11 +410,11 @@ export default function App() {
         const blob = new Blob([code], { type: "text/javascript" });
         currentBlobUrl = URL.createObjectURL(blob);
 
-        // Cache-bust to avoid weird module caching
-        const url = `${currentBlobUrl}?v=${Date.now()}`;
-        console.debug("[dbg:import] importing blob URL:", url);
+        // Blob URLs are unique (UUID-based), so no cache-busting needed.
+        // Appending ?v=... breaks blob URL resolution (browser can't find the blob).
+        console.debug("[dbg:import] importing blob URL:", currentBlobUrl);
         try {
-          const mod = await import(/* @vite-ignore */ url);
+          const mod = await import(/* @vite-ignore */ currentBlobUrl);
           console.debug("[dbg:import] import() succeeded, module keys:", Object.keys(mod));
           return mod;
         } catch (err) {
