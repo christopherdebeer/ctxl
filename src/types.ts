@@ -166,3 +166,36 @@ export interface CreateResult {
   stateStore: StateStore;
   idb: IDB;
 }
+
+// ====================================================================
+// v2: Abstract Component types
+// ====================================================================
+
+// ---- Tools ----
+
+export interface ToolDef {
+  name: string;
+  description: string;
+  schema?: Record<string, string>;
+}
+
+// ---- Reasoning ----
+
+export interface ReasoningResult {
+  content?: string;
+  structured?: any;
+  toolCalls?: Array<{ name: string; args: any }>;
+  reshape?: { reason: string };
+}
+
+// ---- Mutations (v2) ----
+
+export interface MutationRecord {
+  id: string;
+  timestamp: number;
+  componentId: string;
+  trigger: string;
+  previousSource: string;
+  newSource: string;
+  outcome: "swap" | "remount" | "crash-recovery" | "rollback";
+}

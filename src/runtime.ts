@@ -2,12 +2,14 @@
  * Runtime factory.
  *
  * Creates the core runtime object that manages the VFS build pipeline,
- * LLM reasoning (think/evolve), and React Refresh integration.
- * The runtime is assigned to window.__RUNTIME__ and consumed by the
- * compiled VFS components.
+ * LLM reasoning, and React Refresh integration.
+ *
+ * v1 methods (think/evolve/compose/_callLLM) are kept for backward compatibility.
+ * v2 additions: callLLM (unified transport), regenerateRegistry, buildAuthoringPrompt.
  */
 import { createVFSPlugin } from "./vfs-plugin";
-import { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt } from "./prompts";
+import { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt, buildAuthoringPrompt } from "./prompts";
+import { callLLM as llmTransport } from "./llm";
 import type {
   Runtime,
   RuntimeOptions,
@@ -15,6 +17,7 @@ import type {
   ThinkResult,
   ComposeResult,
   FilePatch,
+  ToolDef,
 } from "./types";
 
 export function createRuntime({
@@ -52,158 +55,122 @@ export function createRuntime({
       localStorage.setItem("__RUNTIME_CONFIG__", JSON.stringify(this.config));
     },
 
-    // ---- LLM call (shared by think and evolve) ----
+    // ==================================================================
+    // v2: Unified LLM transport (used by VFS hooks and AbstractComponent)
+    // ==================================================================
 
-    async _callLLM(systemPrompt: string, userPrompt: string): Promise<LLMResult> {
-      const { apiMode, apiKey, proxyUrl, model } = this.config;
-
-      if (apiMode === "none") {
-        return { error: "No API configured. Set API mode in settings.", content: null };
-      }
-
-      try {
-        let response: Response | undefined;
-        const body = {
-          system: systemPrompt,
-          messages: [{ role: "user", content: userPrompt }],
-          model: model || "claude-sonnet-4-5-20250929",
-          max_tokens: 8192,
-        };
-
-        if (apiMode === "anthropic") {
-          response = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true",
-            },
-            body: JSON.stringify(body),
-          });
-        } else if (apiMode === "proxy") {
-          response = await fetch(proxyUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-        }
-
-        if (!response) {
-          return { error: "Unsupported API mode", content: null };
-        }
-
-        if (!response.ok) {
-          const errText = await response.text();
-          return { error: `API error ${response.status}: ${errText}`, content: null };
-        }
-
-        const data = await response.json();
-        const content: string = data.content?.[0]?.text || data.text || "";
-        return { error: null, content };
-      } catch (err: any) {
-        return { error: err.message, content: null };
-      }
+    async callLLM(system: string, messages: Array<{ role: string; content: any }>, extras?: Record<string, any>) {
+      return llmTransport(this.config, system, messages, extras);
     },
 
-    // ---- Think: reason within current form (uses tool_use for structured output) ----
-    // Builds proper multi-turn Anthropic messages from conversation history.
-    // Each previous agent response is represented as a tool_use + tool_result pair.
+    // ==================================================================
+    // v2: Authoring prompt builder (bridged to VFS AbstractComponent)
+    // ==================================================================
+
+    buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], guidelines?: string, existingSource?: string): string {
+      return buildAuthoringPrompt(componentId, inputs, tools, guidelines, existingSource);
+    },
+
+    // ==================================================================
+    // v2: Registry regeneration
+    // ==================================================================
+
+    regenerateRegistry() {
+      const acFiles = [...files.keys()].filter(
+        p => p.startsWith("/src/ac/") && p.endsWith(".tsx") && !p.endsWith("_registry.ts")
+      );
+
+      const imports: string[] = [];
+      const entries: string[] = [];
+
+      acFiles.forEach((path, i) => {
+        const id = path.replace("/src/ac/", "").replace(".tsx", "");
+        imports.push(`import C${i} from "./${id}";`);
+        entries.push(`  "${id}": C${i}`);
+      });
+
+      const source = acFiles.length === 0
+        ? `// Auto-generated component registry.\n(window as any).__COMPONENTS__ ??= {};\n`
+        : `// Auto-generated component registry.\n${imports.join("\n")}\n\n(window as any).__COMPONENTS__ = {\n${entries.join(",\n")}\n};\n`;
+
+      files.set("/src/ac/_registry.ts", source);
+      idb.put("/src/ac/_registry.ts", source).catch(e => console.warn("[registry] persist failed", e));
+      onFileChange("/src/ac/_registry.ts", source);
+    },
+
+    // ==================================================================
+    // v2: IDB access (bridged to VFS AbstractComponent for persistence)
+    // ==================================================================
+
+    get idb() { return idb; },
+
+    // ==================================================================
+    // v1: LLM call (shared by think and evolve)
+    // ==================================================================
+
+    async _callLLM(systemPrompt: string, userPrompt: string): Promise<LLMResult> {
+      const result = await llmTransport(
+        this.config,
+        systemPrompt,
+        [{ role: "user", content: userPrompt }],
+      );
+      if (result.error) return { error: result.error, content: null };
+      const text = result.data?.content?.[0]?.text || result.data?.text || "";
+      return { error: null, content: text };
+    },
+
+    // ==================================================================
+    // v1: Think (reason within current form)
+    // ==================================================================
 
     async think(prompt: string, agentPath: string, history?: Array<{ role: string; content: string }>): Promise<ThinkResult> {
       const currentSource = this.files.get(agentPath) || "";
       const currentState = stateStore.get();
       const systemPrompt = buildThinkPrompt(agentPath, currentSource, currentState);
-      const { apiMode, apiKey, proxyUrl, model } = this.config;
 
-      if (apiMode === "none") {
+      if (this.config.apiMode === "none") {
         return { content: "No API configured. Set API mode in settings." };
       }
 
-      // Tool definition for structured think output
       const thinkTool = {
         name: "think_response",
-        description: "Return a structured thinking response with content, actions, and evolution decisions.",
+        description: "Return a structured thinking response.",
         input_schema: {
           type: "object" as const,
           properties: {
-            content: {
-              type: "string",
-              description: "Your text response — what you want to say or display to the user",
-            },
-            actions: {
-              type: "array",
-              items: { type: "object" },
-              description: "Array of state patches to apply via act(). Each object is merged into external state.",
-            },
-            structured: {
-              type: "object",
-              description: "Any structured data to return (e.g., tasks, configurations, analysis results)",
-              additionalProperties: true,
-            },
-            shouldEvolve: {
-              type: "boolean",
-              description: "Set true ONLY if you need capabilities your current source code doesn't have",
-            },
-            evolveReason: {
-              type: "string",
-              description: "If shouldEvolve is true, explain what new capabilities you need",
-            },
+            content: { type: "string", description: "Your text response" },
+            actions: { type: "array", items: { type: "object" }, description: "State patches" },
+            structured: { type: "object", description: "Structured data", additionalProperties: true },
+            shouldEvolve: { type: "boolean", description: "Need capabilities upgrade?" },
+            evolveReason: { type: "string", description: "Why evolve?" },
           },
           required: ["content"],
         },
       };
 
-      // Build proper multi-turn messages from conversation history.
-      // For tool_use mode, each agent turn is a tool_use block followed by a tool_result.
+      // Build messages from history
       const messages: any[] = [];
       let toolCallCounter = 0;
 
       if (history && history.length > 0) {
-        // Collect user messages and agent responses into proper API turns
-        let pendingUserMessages: string[] = [];
-
+        let pendingUser: string[] = [];
         for (const msg of history) {
           if (msg.role === "user") {
-            pendingUserMessages.push(msg.content);
+            pendingUser.push(msg.content);
           } else if (msg.role === "agent") {
-            // Flush any pending user messages
-            if (pendingUserMessages.length > 0) {
-              // If there are previous tool results to include, merge with user content
-              const userText = pendingUserMessages.join("\n\n");
-              messages.push({ role: "user", content: userText });
-              pendingUserMessages = [];
+            if (pendingUser.length > 0) {
+              messages.push({ role: "user", content: pendingUser.join("\n\n") });
+              pendingUser = [];
             }
-
-            // Represent the agent response as a tool_use + tool_result pair
             const toolId = `toolu_hist_${toolCallCounter++}`;
-            messages.push({
-              role: "assistant",
-              content: [{
-                type: "tool_use",
-                id: toolId,
-                name: "think_response",
-                input: { content: msg.content },
-              }],
-            });
-            messages.push({
-              role: "user",
-              content: [{
-                type: "tool_result",
-                tool_use_id: toolId,
-                content: "Acknowledged.",
-              }],
-            });
-          }
-          // System messages are context — include with next user message
-          else if (msg.role === "system") {
-            pendingUserMessages.push(`[System: ${msg.content}]`);
+            messages.push({ role: "assistant", content: [{ type: "tool_use", id: toolId, name: "think_response", input: { content: msg.content } }] });
+            messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: "Acknowledged." }] });
+          } else if (msg.role === "system") {
+            pendingUser.push(`[System: ${msg.content}]`);
           }
         }
-
-        // Flush remaining user messages, then append the current prompt
-        if (pendingUserMessages.length > 0) {
-          messages.push({ role: "user", content: pendingUserMessages.join("\n\n") + "\n\n" + prompt });
+        if (pendingUser.length > 0) {
+          messages.push({ role: "user", content: pendingUser.join("\n\n") + "\n\n" + prompt });
         } else {
           messages.push({ role: "user", content: prompt });
         }
@@ -211,85 +178,35 @@ export function createRuntime({
         messages.push({ role: "user", content: prompt });
       }
 
-      try {
-        const body = {
-          system: systemPrompt,
-          messages,
-          model: model || "claude-sonnet-4-5-20250929",
-          max_tokens: 8192,
-          tools: [thinkTool],
-          tool_choice: { type: "tool", name: "think_response" },
+      const result = await llmTransport(this.config, systemPrompt, messages, {
+        tools: [thinkTool],
+        tool_choice: { type: "tool", name: "think_response" },
+      });
+
+      if (result.error) return { content: `Error: ${result.error}` };
+
+      const toolBlock = result.data?.content?.find((b: any) => b.type === "tool_use" && b.name === "think_response");
+      if (toolBlock?.input) {
+        return {
+          content: toolBlock.input.content ?? undefined,
+          actions: toolBlock.input.actions,
+          structured: toolBlock.input.structured,
+          shouldEvolve: toolBlock.input.shouldEvolve ?? false,
+          evolveReason: toolBlock.input.evolveReason,
         };
+      }
 
-        console.log("[think] Sending request with tools:", JSON.stringify(body.tool_choice), "messages:", messages.length);
-
-        let response: Response | undefined;
-
-        if (apiMode === "anthropic") {
-          response = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true",
-            },
-            body: JSON.stringify(body),
-          });
-        } else if (apiMode === "proxy") {
-          response = await fetch(proxyUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-        }
-
-        if (!response) return { content: "Unsupported API mode" };
-        if (!response.ok) {
-          const errText = await response.text();
-          return { content: `API error ${response.status}: ${errText}` };
-        }
-
-        const data = await response.json();
-
-        console.log("[think] Response stop_reason:", data.stop_reason);
-        console.log("[think] Response content types:", data.content?.map((b: any) => b.type));
-
-        // Extract tool_use block
-        const toolBlock = data.content?.find((b: any) => b.type === "tool_use" && b.name === "think_response");
-        if (toolBlock?.input) {
-          const input = toolBlock.input;
-          return {
-            content: input.content ?? undefined,
-            actions: input.actions,
-            structured: input.structured,
-            shouldEvolve: input.shouldEvolve ?? false,
-            evolveReason: input.evolveReason,
-          };
-        }
-
-        // Fallback: try text block if no tool_use found
-        const textBlock = data.content?.find((b: any) => b.type === "text");
-        const fallbackText = textBlock?.text || data.text || "";
-        try {
-          const parsed = JSON.parse(fallbackText);
-          return {
-            content: parsed.content ?? fallbackText,
-            actions: parsed.actions,
-            structured: parsed.structured,
-            shouldEvolve: parsed.shouldEvolve ?? false,
-            evolveReason: parsed.evolveReason,
-          };
-        } catch {
-          return { content: fallbackText };
-        }
-      } catch (err: any) {
-        return { content: `Error: ${err.message}` };
+      const textBlock = result.data?.content?.find((b: any) => b.type === "text");
+      const fallbackText = textBlock?.text || "";
+      try {
+        const parsed = JSON.parse(fallbackText);
+        return { content: parsed.content ?? fallbackText, actions: parsed.actions, structured: parsed.structured, shouldEvolve: parsed.shouldEvolve ?? false, evolveReason: parsed.evolveReason };
+      } catch {
+        return { content: fallbackText };
       }
     },
 
-    // ---- Evolve: produce new source code ----
-
+    // v1: Evolve
     async evolve(prompt: string, agentPath: string): Promise<LLMResult> {
       const currentSource = this.files.get(agentPath) || "";
       const currentState = stateStore.get();
@@ -297,41 +214,28 @@ export function createRuntime({
       return this._callLLM(systemPrompt, prompt);
     },
 
-    // ---- Compose: create a new child component file ----
-
+    // v1: Compose
     async compose(path: string, purpose: string, parentPath?: string): Promise<ComposeResult> {
       const parentSource = parentPath ? files.get(parentPath) : undefined;
       const existingFiles = [...files.keys()];
       const currentState = stateStore.get();
-      const systemPrompt = buildComposePrompt(
-        path, purpose, parentPath, parentSource, existingFiles, currentState
-      );
-
+      const systemPrompt = buildComposePrompt(path, purpose, parentPath, parentSource, existingFiles, currentState);
       const { error, content } = await this._callLLM(systemPrompt, purpose);
-      if (error) {
-        return { error, source: null, path };
-      }
-
-      // Strip markdown code fences if present (flexible: anywhere in content)
+      if (error) return { error, source: null, path };
       let source = content || "";
       const fenceMatch = source.match(/```(?:tsx?|jsx?|javascript|typescript)?\s*\n([\s\S]*?)```/);
-      if (fenceMatch) {
-        source = fenceMatch[1];
-      }
+      if (fenceMatch) source = fenceMatch[1];
       source = source.trim();
-
       if (source.startsWith("import ")) {
         files.set(path, source);
         await idb.put(path, source);
         onFileChange(path, source);
         return { error: null, source, path };
       }
-
-      console.log("[compose] Output did not start with imports. First 200 chars:", source.slice(0, 200));
       return { error: "Composed output did not start with imports", source, path };
     },
 
-    // ---- Legacy alias ----
+    // v1: Legacy alias
     async reason(prompt: string, agentPath: string): Promise<LLMResult> {
       return this.evolve(prompt, agentPath);
     },
@@ -350,7 +254,7 @@ export function createRuntime({
         onMode("error", "err");
         onStatus(String(err?.stack || err));
         onError(err);
-        throw err; // Re-throw so caller can handle
+        throw err;
       }
     },
 
@@ -440,7 +344,7 @@ export function createRuntime({
       await idb.clear();
       location.reload();
     },
-  };
+  } as any; // v2 methods extend beyond the v1 Runtime interface
 
   return runtime;
 }

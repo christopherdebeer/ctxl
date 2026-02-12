@@ -8,8 +8,10 @@
 import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
 import { createIDB } from "./idb";
 import { createStateStore } from "./state";
+import { createAtomRegistry } from "./atoms";
 import { createRuntime } from "./runtime";
 import { DEFAULT_SEEDS } from "./seeds";
+import { V2_SEEDS } from "./seeds-v2";
 import type { Runtime, IDB } from "./types";
 
 // ============================================================
@@ -48,7 +50,7 @@ const aboutBody = aboutEl.querySelector(".markdown-body") as HTMLElement;
 // State
 // ============================================================
 
-let activePath = "/src/agent.tsx";
+let activePath = "/src/main.tsx";
 let aboutLoaded = false;
 
 // ============================================================
@@ -218,21 +220,35 @@ const defaultProxyUrl = (location.hostname === "localhost" || location.hostname 
 // 1. IndexedDB
 idb = createIDB();
 
-// 2. State store
+// 2. State store (v1) + Atom registry (v2)
 const stateStore = createStateStore();
 window.__AGENT_STATE__ = stateStore;
 
-// 3. Load or seed VFS
+const atomRegistry = createAtomRegistry();
+await atomRegistry.hydrate(idb);
+(window as any).__ATOMS__ = atomRegistry;
+
+// 3. Determine seed mode: v2 if URL has ?v2, or if VFS has v2 files
+const urlParams = new URLSearchParams(location.search);
+const forceV2 = urlParams.has("v2");
+
+// 4. Load or seed VFS
 files = new Map<string, string>();
 const rows = await idb.getAll();
-if (rows.length === 0) {
-  for (const [p, t] of DEFAULT_SEEDS.entries()) {
+const vfsRows = rows.filter(r => !r.path.startsWith("__atom:"));
+
+if (vfsRows.length === 0) {
+  const seeds = forceV2 ? V2_SEEDS : DEFAULT_SEEDS;
+  for (const [p, t] of seeds.entries()) {
     files.set(p, t);
     await idb.put(p, t);
   }
 } else {
-  for (const r of rows) files.set(r.path, r.text);
+  for (const r of vfsRows) files.set(r.path, r.text);
 }
+
+// Detect v2 mode from VFS content
+const isV2 = files.has("/src/ctxl/hooks.ts") || files.has("/src/ctxl/abstract-component.tsx");
 
 renderFileButtons();
 editorEl.value = files.get(activePath) ?? "";
