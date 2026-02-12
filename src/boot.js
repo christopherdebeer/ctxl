@@ -1,17 +1,15 @@
 /**
  * boot.js — Dev environment entry point for index.html
  *
- * Imports the ctxl library and wires it to the dev UI:
- * file browser, editor, settings panel, keyboard shortcuts, drawer.
+ * Imports from the ctxl module system and wires everything
+ * to the dev UI: file browser, editor, settings, keyboard shortcuts, drawer.
  */
 
 import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
-import {
-  createIDB,
-  createStateStore,
-  createRuntime,
-  DEFAULT_SEEDS,
-} from "./ctxl.js";
+import { createIDB } from "./idb.js";
+import { createStateStore } from "./state.js";
+import { createRuntime } from "./runtime.js";
+import { DEFAULT_SEEDS } from "./seeds.js";
 
 // ============================================================
 // DOM references
@@ -86,7 +84,7 @@ function logStatus(text) {
 // File browser & editor
 // ============================================================
 
-let files; // set during boot
+let files; // assigned during boot
 
 function renderFileButtons() {
   filesEl.innerHTML = "";
@@ -113,6 +111,7 @@ function flushEditorToVFS() {
 }
 
 function updateUnsavedIndicator() {
+  if (!files) return;
   const saved = files.get(activePath) ?? "";
   if (editorEl.value !== saved) {
     devToggle.classList.add("unsaved");

@@ -1,6 +1,6 @@
 {
-  "buildCommand": "npm run vercel-build",
-  "outputDirectory": ".",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "functions": {
     "api/chat.js": {
       "memory": 1024,

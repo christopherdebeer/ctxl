@@ -1,23 +1,23 @@
 {
-  "name": "you-are-the-component",
-  "version": "0.1.0",
+  "name": "ctxl",
+  "version": "0.2.0",
   "description": "Self-modifying React components with LLM reasoning",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n html,proxy -c cyan,magenta \"npm run serve\" \"npm run proxy\"",
-    "serve": "npx serve -l 3000 -n .",
+    "dev": "concurrently -n vite,proxy -c cyan,magenta \"vite\" \"node proxy/server.js\"",
     "proxy": "node proxy/server.js",
-    "build": "echo 'Static site - no build needed'",
-    "vercel-build": "echo 'Static site - no build needed'"
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "@anthropic-ai/bedrock-sdk": "^0.26.3",
+    "@anthropic-ai/sdk": "^0.39.0",
     "cors": "^2.8.5",
     "express": "^4.21.0"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
-    "serve": "^14.2.1"
+    "serve": "^14.2.1",
+    "vite": "^7.3.1"
   }
 }
