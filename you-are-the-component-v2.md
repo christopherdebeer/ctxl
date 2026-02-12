@@ -598,37 +598,41 @@ This is a survivable event, not a fatal error. The biological analogy: a framesh
 
 ## 14. Implementation Design
 
-### Module structure
+### Module structure (implemented)
 
 ```
 src/
-  ctxl.ts              -- Public API: create(), AbstractComponent, useReasoning, atom
-  types.ts             -- All TypeScript interfaces
+  ctxl.ts              -- Public API: create(), createV2(), exports all modules
+  types.ts             -- All TypeScript interfaces (v1 + v2)
 
-  # Build infrastructure (the novel layer, ~200 LOC)
-  vfs-plugin.ts        -- esbuild VFS resolver
-  refresh.ts           -- React Refresh regex injection
-  idb.ts               -- IndexedDB persistence
+  # Build infrastructure (the novel layer, unchanged)
+  vfs-plugin.ts        -- esbuild VFS resolver (65 LOC)
+  refresh.ts           -- React Refresh regex injection (37 LOC)
+  idb.ts               -- IndexedDB persistence (56 LOC)
 
-  # Runtime (orchestration, ~200 LOC)
-  runtime.ts           -- Build pipeline: buildBundle, importBundle, buildAndRun, applyPatch
-  llm.ts               -- LLM transport: single callLLM with configurable body
+  # Host-side runtime
+  runtime.ts           -- Build pipeline + v1 compat + v2 bridges (callLLM, regenerateRegistry, buildAuthoringPrompt)
+  llm.ts               -- Unified LLM transport: single callLLM(config, system, messages, extras) (~85 LOC)
+  atoms.ts             -- Atom registry with IDB persistence, hydration, pub/sub (~100 LOC)
 
-  # React layer (hooks + components, ~300 LOC)
-  abstract-component.tsx  -- <AbstractComponent> wrapper: identity, authoring, error boundary
-  use-reasoning.ts     -- useReasoning hook: delta-driven LLM reasoning
-  use-atom.ts          -- useAtom hook: scoped external state with pub/sub
-  atoms.ts             -- Atom creation and registry
+  # Prompts
+  prompts.ts           -- v1 prompts (kept) + buildAuthoringPrompt + buildReasoningContext
 
-  # Prompts (~100 LOC)
-  prompts.ts           -- Authoring prompt builder (one prompt, not three)
+  # VFS seed sources (compiled by esbuild in-browser)
+  seed-ctxl-hooks.ts   -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom hooks
+  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper
+  seed-v2-main.ts      -- VFS /src/main.tsx: renders root <AbstractComponent>
+  seeds-v2.ts          -- Assembles v2 seed map (4 VFS files)
 
-  # Seeds (minimal, ~50 LOC)
-  seeds.ts             -- Default seed: just main.tsx entry point
-  seed-main.ts         -- Entry point that renders the root <AbstractComponent>
+  # v1 seeds (preserved for backward compat)
+  seeds.ts             -- v1 seed map
+  seed-main.ts         -- v1 main.tsx
+  seed-agent.ts        -- v1 agent component
+  seed-agent-mount.ts  -- v1 agent mount + error boundary
+  seed-use-agent-state.ts -- v1 hooks
 
-  # Dev harness (separate, doesn't leak into core)
-  boot.ts              -- Dev UI: editor, file browser, settings
+  # Dev harness
+  boot.ts              -- Dev UI + atom registry setup + v2 detection (?v2 param)
 ```
 
 ### Key interfaces
@@ -753,25 +757,25 @@ interface Runtime {
 
 ## 15. Execution Plan
 
-### Phase 1: Foundation
+### Phase 1: Foundation -- IMPLEMENTED
 
 **Build the infrastructure and core hooks. Get one abstract component rendering.**
 
-1. **`llm.ts`** -- Single `callLLM(system, user, extras?)` function. Supports both direct Anthropic API and proxy mode. Accepts arbitrary extra body fields (tools, tool_choice). Returns raw response. ~50 LOC.
+1. **`llm.ts`** -- DONE. `callLLM(config, system, messages, extras?)`. Unified transport used by both v1 methods and v2 hooks. 85 LOC.
 
-2. **`atoms.ts` + `use-atom.ts`** -- Atom primitive: `atom(key, default)` creates a named external store. `useAtom(a)` subscribes via `useSyncExternalStore`. Atoms persist to IDB. Replace the global `window.__AGENT_STATE__`. ~80 LOC.
+2. **`atoms.ts` + `useAtom` hook** -- DONE. Host-side `createAtomRegistry()` with IDB persistence + hydration. VFS-side `useAtom(key, default)` hook via `useSyncExternalStore`. ~100 LOC host + ~30 LOC VFS.
 
-3. **`use-reasoning.ts`** -- The `useReasoning` hook. Takes prompt (string or delta function), deps array, and options (tools, onResult, debounce). Internally: tracks previous deps, builds delta prompt, calls `callLLM` with tool definitions, parses tool_use response, returns `ReasoningResult`. Debounce and max-fire-count for settling. ~120 LOC.
+3. **`useReasoning` hook** -- DONE. Delta-driven reasoning as VFS seed. Tracks previous deps, builds delta prompt, calls LLM with `reason_response` tool, dispatches tool calls via `onToolCall`. Debounce + max-fire-count (10/mount) for settling. ~140 LOC.
 
-4. **`prompts.ts`** -- Single authoring prompt builder. Takes: input shape (TypeScript types), tool definitions, guidelines, optional existing source (for re-authoring). Returns system prompt. ~60 LOC.
+4. **`prompts.ts`** -- DONE. `buildAuthoringPrompt(id, inputs, tools, guidelines?, existingSource?)` derives input shape automatically. `buildReasoningContext(id, tools)` for hook system prompts. v1 prompts preserved. ~120 LOC added.
 
-5. **`abstract-component.tsx`** -- The wrapper. Checks VFS for `id`. If missing, shows fallback and initiates authoring (LLM call -> VFS write -> build). If present, dynamically renders the cached component, passing inputs/tools/onToolCall as props. Wraps in error boundary. Detects shape changes for re-authoring. ~150 LOC.
+5. **`AbstractComponent` wrapper** -- DONE as VFS seed. Identity resolution, author-on-mount, error boundary (`ComponentErrorBoundary`), shape change detection, `__reshape` tool interception. ~200 LOC.
 
-6. **Slim `runtime.ts`** -- Build pipeline only: `buildBundle`, `importBundle`, `buildAndRun`, `applyPatch`, `initRefresh`, `initEsbuild`. No LLM methods (those are in `llm.ts`), no callbacks plumbing (emit events instead), no compose/think/evolve. ~120 LOC.
+6. **`runtime.ts`** -- DONE. Added `callLLM` (bridged), `regenerateRegistry()` (auto-generates `/src/ac/_registry.ts`), `buildAuthoringPrompt` (bridged). v1 `_callLLM`/`think` refactored to use shared `llm.ts`. v1 API fully preserved.
 
-7. **Minimal seed** -- `main.tsx` that renders a single `<AbstractComponent id="root" inputs={{ objective }} />`. No 250-line seed agent. The root component authors itself.
+7. **Minimal seed** -- DONE. `main.tsx` renders `<AbstractComponent id="root" inputs={{ objective }} />` with a fallback. Registry starts empty. `boot.ts` supports `?v2` URL param + auto-detection.
 
-**Milestone:** A page loads. The root AbstractComponent has no source. It authors itself via LLM. The authored component renders. On reload, it renders instantly from cache.
+**Milestone:** A page loads with `?v2`. The root AbstractComponent has no source. It authors itself via LLM. The authored component renders. On reload, it renders instantly from IDB cache.
 
 ### Phase 2: Interactivity
 
