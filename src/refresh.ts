@@ -4,10 +4,10 @@
  * Detects PascalCase component declarations and wraps the module
  * with $RefreshReg$ calls so React Refresh can track component identity.
  */
-export function injectReactRefresh(code, filePath) {
+export function injectReactRefresh(code: string, filePath: string): string {
   const componentRegex = /(?:export\s+(?:default\s+)?)?(?:function|const)\s+([A-Z][a-zA-Z0-9]*)/g;
-  const components = [];
-  let match;
+  const components: string[] = [];
+  let match: RegExpExecArray | null;
   while ((match = componentRegex.exec(code)) !== null) {
     components.push(match[1]);
   }

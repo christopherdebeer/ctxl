@@ -4,14 +4,22 @@
  * Resolves imports against the in-memory VFS map and injects
  * React Refresh registration for TSX/JSX files.
  */
-import { injectReactRefresh } from "./refresh.js";
+import { injectReactRefresh } from "./refresh";
+import type { EsbuildPlugin } from "./types";
 
-export function createVFSPlugin(filesMap, options = {}) {
+interface VFSPluginOptions {
+  RefreshRuntime?: any;
+}
+
+export function createVFSPlugin(
+  filesMap: Map<string, string>,
+  options: VFSPluginOptions = {},
+): EsbuildPlugin {
   const { RefreshRuntime } = options;
   return {
     name: "vfs",
     setup(build) {
-      build.onResolve({ filter: /.*/ }, (args) => {
+      build.onResolve({ filter: /.*/ }, (args: any) => {
         if (args.kind === "entry-point") {
           return { path: args.path, namespace: "vfs" };
         }
@@ -19,7 +27,7 @@ export function createVFSPlugin(filesMap, options = {}) {
         if (!args.path.startsWith(".") && !args.path.startsWith("/")) {
           return { path: args.path, external: true };
         }
-        const baseDir = args.resolveDir || "/";
+        const baseDir: string = args.resolveDir || "/";
         const resolved = new URL(args.path, "file://" + baseDir + "/").pathname;
         const candidates = [
           resolved,
@@ -35,8 +43,8 @@ export function createVFSPlugin(filesMap, options = {}) {
         return { path: hit, namespace: "vfs" };
       });
 
-      build.onLoad({ filter: /.*/, namespace: "vfs" }, (args) => {
-        let contents = filesMap.get(args.path);
+      build.onLoad({ filter: /.*/, namespace: "vfs" }, (args: any) => {
+        let contents: string | undefined = filesMap.get(args.path);
         if (contents == null) {
           throw new Error(`Missing file: ${args.path}`);
         }

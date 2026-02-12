@@ -6,11 +6,25 @@
  * The runtime is assigned to window.__RUNTIME__ and consumed by the
  * compiled VFS components.
  */
-import { createVFSPlugin } from "./vfs-plugin.js";
-import { buildThinkPrompt, buildEvolvePrompt } from "./prompts.js";
+import { createVFSPlugin } from "./vfs-plugin";
+import { buildThinkPrompt, buildEvolvePrompt } from "./prompts";
+import type {
+  Runtime,
+  RuntimeOptions,
+  LLMResult,
+  ThinkResult,
+  FilePatch,
+} from "./types";
 
-export function createRuntime({ esbuild, idb, stateStore, files, config, callbacks = {} }) {
-  let currentBlobUrl = null;
+export function createRuntime({
+  esbuild,
+  idb,
+  stateStore,
+  files,
+  config,
+  callbacks = {},
+}: RuntimeOptions): Runtime {
+  let currentBlobUrl: string | null = null;
   let buildCounter = 0;
 
   const {
@@ -22,7 +36,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
     onError = () => {},
   } = callbacks;
 
-  const runtime = {
+  const runtime: Runtime = {
     files,
     disposers: [],
     config,
@@ -39,7 +53,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
 
     // ---- LLM call (shared by think and evolve) ----
 
-    async _callLLM(systemPrompt, userPrompt) {
+    async _callLLM(systemPrompt: string, userPrompt: string): Promise<LLMResult> {
       const { apiMode, apiKey, proxyUrl } = this.config;
 
       if (apiMode === "none") {
@@ -47,7 +61,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
       }
 
       try {
-        let response;
+        let response: Response | undefined;
         const body = {
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
@@ -74,22 +88,26 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
           });
         }
 
+        if (!response) {
+          return { error: "Unsupported API mode", content: null };
+        }
+
         if (!response.ok) {
           const errText = await response.text();
           return { error: `API error ${response.status}: ${errText}`, content: null };
         }
 
         const data = await response.json();
-        const content = data.content?.[0]?.text || data.text || "";
+        const content: string = data.content?.[0]?.text || data.text || "";
         return { error: null, content };
-      } catch (err) {
+      } catch (err: any) {
         return { error: err.message, content: null };
       }
     },
 
     // ---- Think: reason within current form ----
 
-    async think(prompt, agentPath) {
+    async think(prompt: string, agentPath: string): Promise<ThinkResult> {
       const currentSource = this.files.get(agentPath) || "";
       const currentState = stateStore.get();
       const systemPrompt = buildThinkPrompt(agentPath, currentSource, currentState);
@@ -101,7 +119,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
 
       // Try to parse as structured JSON, fallback to plain text
       try {
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(content!);
         return {
           content: parsed.content ?? content,
           actions: parsed.actions,
@@ -110,13 +128,13 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
           evolveReason: parsed.evolveReason,
         };
       } catch {
-        return { content };
+        return { content: content ?? undefined };
       }
     },
 
     // ---- Evolve: produce new source code ----
 
-    async evolve(prompt, agentPath) {
+    async evolve(prompt: string, agentPath: string): Promise<LLMResult> {
       const currentSource = this.files.get(agentPath) || "";
       const currentState = stateStore.get();
       const systemPrompt = buildEvolvePrompt(agentPath, currentSource, currentState);
@@ -124,13 +142,13 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
     },
 
     // ---- Legacy alias ----
-    async reason(prompt, agentPath) {
+    async reason(prompt: string, agentPath: string): Promise<LLMResult> {
       return this.evolve(prompt, agentPath);
     },
 
     // ---- Apply file patches and rebuild ----
 
-    async applyPatch(patches) {
+    async applyPatch(patches: FilePatch[]) {
       for (const p of patches) {
         files.set(p.path, p.text);
         await idb.put(p.path, p.text);
@@ -143,7 +161,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
 
     runDisposers() {
       while (this.disposers.length) {
-        const fn = this.disposers.pop();
+        const fn = this.disposers.pop()!;
         try { fn(); } catch (e) { console.warn("[dispose]", e); }
       }
     },
@@ -167,7 +185,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
       return { code: out.text, ms: Math.round(performance.now() - t0) };
     },
 
-    async importBundle(code) {
+    async importBundle(code: string) {
       if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
       const blob = new Blob([code], { type: "text/javascript" });
       currentBlobUrl = URL.createObjectURL(blob);
@@ -193,7 +211,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
         onMode("running", "");
         onStatus(`Build #${buildCounter} running. (${ms}ms)`);
         onBuildEnd(buildCounter, ms);
-      } catch (err) {
+      } catch (err: any) {
         onMode("error", "err");
         onStatus(String(err?.stack || err));
         onError(err);
@@ -207,7 +225,7 @@ export function createRuntime({ esbuild, idb, stateStore, files, config, callbac
         const RefreshRuntime = await import(/* @vite-ignore */ "react-refresh/runtime");
         RefreshRuntime.injectIntoGlobalHook(window);
         window.$RefreshReg$ = () => {};
-        window.$RefreshSig$ = () => (type) => type;
+        window.$RefreshSig$ = () => (type: any) => type;
         this.RefreshRuntime = RefreshRuntime;
         return true;
       } catch (err) {

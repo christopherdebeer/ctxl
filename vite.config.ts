@@ -19,7 +19,7 @@ export default defineConfig({
   build: {
     outDir: "dist",
     rollupOptions: {
-      external: (id) =>
+      external: (id: string) =>
         id.startsWith("https://") ||
         id.startsWith("http://") ||
         IMPORT_MAP_EXTERNALS.includes(id),

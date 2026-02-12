@@ -4,8 +4,13 @@
  * buildThinkPrompt  — asks the LLM to reason within current form (JSON output)
  * buildEvolvePrompt — asks the LLM to produce replacement source code
  */
+import type { AgentMemory } from "./types";
 
-export function buildThinkPrompt(agentPath, currentSource, currentState) {
+export function buildThinkPrompt(
+  agentPath: string,
+  currentSource: string,
+  currentState: AgentMemory,
+): string {
   return `You are an AI agent EMBODIED as a React component. You ARE the component.
 
 RIGHT NOW you are THINKING — reasoning within your current form.
@@ -41,7 +46,11 @@ CURRENT SOURCE (${agentPath}):
 ${currentSource}`;
 }
 
-export function buildEvolvePrompt(agentPath, currentSource, currentState) {
+export function buildEvolvePrompt(
+  agentPath: string,
+  currentSource: string,
+  currentState: AgentMemory,
+): string {
   return `You are an AI agent EMBODIED as a React component. You ARE the component.
 
 TASK: Transform yourself to fulfill the user's objective. Return ONLY the new complete source code for ${agentPath}.

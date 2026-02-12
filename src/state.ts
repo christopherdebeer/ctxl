@@ -5,7 +5,9 @@
  * module reimports, crashes, and full rebuilds. Uses immutable
  * update semantics (new object ref on set) for useSyncExternalStore.
  */
-export function createStateStore(initial = {}) {
+import type { AgentMemory, StateStore } from "./types";
+
+export function createStateStore(initial: AgentMemory = {}): StateStore {
   return {
     memory: { ...initial },
     meta: { cycle: 0, mutations: [], thinkHistory: [] },
