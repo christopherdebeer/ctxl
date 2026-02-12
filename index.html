@@ -1036,6 +1036,11 @@ window.$RefreshSig$ = prevRefreshSig;
       // Load config from localStorage
       const savedConfig = JSON.parse(localStorage.getItem("__RUNTIME_CONFIG__") || "{}");
 
+      // Auto-detect proxy URL: use relative /api/chat on deployed sites, localhost:3001 for local dev
+      const defaultProxyUrl = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+        ? "http://localhost:3001/api/chat"
+        : "/api/chat";
+
       window.__RUNTIME__ = {
         files,
         disposers,
@@ -1044,7 +1049,7 @@ window.$RefreshSig$ = prevRefreshSig;
         config: {
           apiMode: savedConfig.apiMode || "none", // 'anthropic' | 'proxy' | 'none'
           apiKey: savedConfig.apiKey || "",       // For direct Anthropic API
-          proxyUrl: savedConfig.proxyUrl || "http://localhost:3001/api/chat", // For proxy mode
+          proxyUrl: savedConfig.proxyUrl || defaultProxyUrl, // For proxy mode
         },
 
         saveConfig() {
