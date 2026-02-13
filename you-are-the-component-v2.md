@@ -141,7 +141,7 @@ The `id` determines *what source to use*. The React `key` determines *which inst
 
 ### 5.1 What the LLM receives during authoring
 
-Authoring is the moment of genesis. The LLM is asked: "given this interface, write a component."
+Authoring is the moment of genesis. The LLM is asked: "given this interface, write a component." The LLM delivers source code via the `write_component` tool (forced `tool_choice`), which guarantees structured output -- no markdown fences, no preamble, just the `src` field containing raw TSX.
 
 The authoring prompt contains:
 
@@ -782,7 +782,7 @@ interface Runtime {
 
 11. **Mutation history + rollback** -- DONE. `window.__MUTATIONS__` stores up to 50 `MutationEntry` records. Every authoring, re-authoring, and reshape records `previousSource` and `newSource`. Error boundary tracks consecutive crash count; on 3rd crash, `getPreviousSource()` finds the last known-good source and triggers rollback (VFS write + registry + rebuild). ~50 LOC for mutation tracking + ~25 LOC for rollback logic.
 
-12. **Authoring prompt polish** -- DONE. Stronger "no markdown fences" instruction. Clearer `useReasoning` usage with `componentId` and function-prompt pattern. Explicit guidance on `report` tool as canonical upward channel. Better handling of null result on initial render.
+12. **Authoring prompt polish** -- DONE. Authoring now uses `write_component` tool with forced `tool_choice` -- the LLM delivers source via `{ src: "..." }` structured output, eliminating markdown fence issues entirely. Clearer `useReasoning` usage with `componentId` and function-prompt pattern. Explicit guidance on `report` tool as canonical upward channel. Better handling of null result on initial render.
 
 **Milestone:** A component reasons about input deltas, invokes tools, reports to its parent, and can reshape itself when needed. The error boundary recovers from bad self-modifications by rolling back to previous source after 3 crashes.
 
@@ -838,7 +838,7 @@ The codebase is now v2-canonical. No v1 code remains. The full system:
 
 **VFS seeds** (compiled in-browser by esbuild):
 - **hooks.ts** -- `useReasoning` (delta-driven perception + inspection context) + `useAtom` (shared state)
-- **abstract-component.tsx** -- identity resolution, authoring, mutation history, error boundary + rollback, authoring queue
+- **abstract-component.tsx** -- identity resolution, tool-based authoring (`write_component`), mutation history, error boundary + rollback, authoring queue
 - **main.tsx** -- renders root `<AbstractComponent>`
 - **ac/_registry.ts** -- auto-generated component registry
 

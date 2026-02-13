@@ -227,10 +227,24 @@ export function AbstractComponent({
         const existingSource = runtime.files.get(vfsPath) || "";
         const isReauthor = shapeChanged && !!existingSource;
 
-        // Call LLM to author the component (can run concurrently with other LLM calls)
+        // Call LLM to author the component via write_component tool
         const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, isReauthor ? existingSource : undefined);
         const messages = [{ role: "user", content: "Author this component." }];
-        const response = await runtime.callLLM(system, messages);
+        const authorTool = {
+          name: "write_component",
+          description: "Write the complete component source code",
+          input_schema: {
+            type: "object",
+            properties: {
+              src: { type: "string", description: "Complete TSX source code for the component" },
+            },
+            required: ["src"],
+          },
+        };
+        const response = await runtime.callLLM(system, messages, {
+          tools: [authorTool],
+          tool_choice: { type: "tool", name: "write_component" },
+        });
 
         if (response.error) {
           setPhase("error");
@@ -239,18 +253,12 @@ export function AbstractComponent({
           return;
         }
 
-        // Extract source from response
-        let source = "";
+        // Extract source from write_component tool_use block
         const data = response.data;
-        if (data?.content) {
-          const textBlock = data.content.find((b: any) => b.type === "text");
-          source = textBlock?.text || "";
-        }
-
-        // Strip markdown fences if present
-        const fenceMatch = source.match(/\`\`\`(?:tsx?|jsx?)?\\s*\\n([\\s\\S]*?)\`\`\`/);
-        if (fenceMatch) source = fenceMatch[1];
-        source = source.trim();
+        const toolBlock = data?.content?.find(
+          (b: any) => b.type === "tool_use" && b.name === "write_component"
+        );
+        let source = (toolBlock?.input?.src || "").trim();
 
         if (!source) {
           setPhase("error");

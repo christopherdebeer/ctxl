@@ -51,8 +51,7 @@ ${existingSource}
 Preserve working functionality. Adapt to the new interface.`
     : "";
 
-  return `You are authoring a React component. Return ONLY the complete TypeScript/JSX source code.
-CRITICAL: Do NOT wrap your response in markdown fences (\`\`\`). Return raw source code starting with import statements.
+  return `You are authoring a React component. Use the write_component tool to deliver the source code.
 
 COMPONENT ID: ${componentId}
 VFS PATH: /src/ac/${componentId}.tsx
