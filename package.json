@@ -7,7 +7,8 @@
     "dev": "concurrently -n vite,proxy -c cyan,magenta \"vite\" \"node proxy/server.js\"",
     "proxy": "node proxy/server.js",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:seeds": "tsc -p tsconfig.seeds.json"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.26.3",
@@ -16,6 +17,8 @@
     "express": "^4.21.0"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "concurrently": "^8.2.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

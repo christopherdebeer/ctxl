@@ -1,9 +1,17 @@
 /**
- * Seed: /src/main.tsx (v2) — Entry point.
- * Renders the root AbstractComponent. Imports the component registry.
+ * VFS SEED — imported as raw text, not compiled into the host bundle.
+ *
+ * This file is authored as normal TypeScript so it benefits from IDE
+ * autocompletion and type-checking (via tsconfig.seeds.json), but at build
+ * time Vite's `?raw` import injects its source text as a string into the
+ * host bundle.  At runtime esbuild-wasm compiles it inside the browser as
+ * part of the Virtual File System (VFS).
+ *
+ * VFS path:  /src/main.tsx
+ * Registry:  src/seeds-v2.ts
  */
 
-export const SEED_V2_MAIN_SOURCE = `import React from "react";
+import React from "react";
 import { createRoot } from "react-dom/client";
 import { AbstractComponent } from "./ctxl/abstract-component";
 import "./ac/_registry";
@@ -45,7 +53,7 @@ if (!window.__RUNTIME__._mounted) {
             style: {
               fontSize: "48px", marginBottom: "16px", opacity: 0.3,
             }
-          }, "\\u2726"),
+          }, "\u2726"),
           React.createElement("div", { style: { fontSize: "14px" } }, "Authoring root component..."),
         ),
       ),
@@ -53,4 +61,3 @@ if (!window.__RUNTIME__._mounted) {
   );
   window.__RUNTIME__._mounted = true;
 }
-`;

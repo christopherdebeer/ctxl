@@ -6,7 +6,7 @@
  * self-modification, and page reloads.
  *
  * Host-side module: creates atoms and manages the registry on window.__ATOMS__.
- * VFS components access atoms via the useAtom hook (seed-ctxl-hooks.ts).
+ * VFS components access atoms via the useAtom hook (src/seeds/ctxl/hooks.ts).
  */
 import type { IDB } from "./types";
 

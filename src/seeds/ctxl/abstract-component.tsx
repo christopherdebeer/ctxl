@@ -1,15 +1,17 @@
 /**
- * Seed: /src/ctxl/abstract-component.tsx — The AbstractComponent wrapper.
+ * VFS SEED — imported as raw text, not compiled into the host bundle.
  *
- * Handles:
- * - Identity resolution (id -> VFS source)
- * - Authoring on first mount (LLM generates source)
- * - Re-authoring on shape change
- * - Error boundary with rollback
- * - Rendering the authored component with inputs/tools
+ * This file is authored as normal TypeScript so it benefits from IDE
+ * autocompletion and type-checking (via tsconfig.seeds.json), but at build
+ * time Vite's `?raw` import injects its source text as a string into the
+ * host bundle.  At runtime esbuild-wasm compiles it inside the browser as
+ * part of the Virtual File System (VFS).
+ *
+ * VFS path:  /src/ctxl/abstract-component.tsx
+ * Registry:  src/seeds-v2.ts
  */
 
-export const SEED_ABSTRACT_COMPONENT_SOURCE = `import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
 import { ToolContext } from "./hooks";
 
 // ---- Mutation History ----
@@ -65,7 +67,7 @@ function enqueueAuthoring(fn: () => Promise<void>): Promise<void> {
 
 interface EBProps {
   componentId: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   onCrash: (error: Error, crashCount: number) => void;
 }
 
@@ -465,4 +467,3 @@ export function AbstractComponent({
     ),
   );
 }
-`;
