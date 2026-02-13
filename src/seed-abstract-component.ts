@@ -188,7 +188,7 @@ export function AbstractComponent({
 
   // Get the compiled component from the registry
   const registry = (window as any).__COMPONENTS__ || {};
-  const CompiledComponent = registry[id] || null;
+  const compiledComponent = registry[id] || null;
 
   // Check if shape changed (triggers re-authoring)
   const currentInputShape = getShape(inputs);
@@ -202,7 +202,7 @@ export function AbstractComponent({
     if (authoringRef.current) return;
 
     // Already have the component and shape hasn't changed
-    if (CompiledComponent && !shapeChanged) {
+    if (compiledComponent && !shapeChanged) {
       shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
       setPhase("ready");
       return;
@@ -291,7 +291,7 @@ export function AbstractComponent({
         authoringRef.current = false;
       }
     })();
-  }, [id, CompiledComponent, shapeChanged, currentInputShape, currentToolShape]);
+  }, [id, compiledComponent, shapeChanged, currentInputShape, currentToolShape]);
 
   // Error boundary crash handler with rollback on repeated crashes
   const handleCrash = useCallback((error: Error, crashCount: number) => {
@@ -379,7 +379,7 @@ export function AbstractComponent({
     );
   }
 
-  if (phase === "authoring" || phase === "checking" || !CompiledComponent) {
+  if (phase === "authoring" || phase === "checking" || !compiledComponent) {
     return (fallback || React.createElement("div", {
       style: {
         padding: "40px", textAlign: "center", color: "#888",
@@ -407,7 +407,7 @@ export function AbstractComponent({
     componentId: id,
     onCrash: handleCrash,
   },
-    React.createElement(CompiledComponent, {
+    React.createElement(compiledComponent, {
       inputs,
       tools,
       onToolCall: handleToolCall,
