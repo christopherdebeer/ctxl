@@ -777,19 +777,21 @@ interface Runtime {
 
 **Milestone:** A page loads with `?v2`. The root AbstractComponent has no source. It authors itself via LLM. The authored component renders. On reload, it renders instantly from IDB cache.
 
-### Phase 2: Interactivity
+### Phase 2: Interactivity -- IMPLEMENTED
 
 **Make authored components alive -- reasoning, tools, self-modification.**
 
-8. **Wire `useReasoning` into authored components.** The authoring prompt instructs the LLM to include `useReasoning` hooks for delta-driven perception. Verify that authored components actually use the hook and that it fires correctly on input changes.
+8. **`useReasoning` context fix** -- DONE. The hook now builds its own system context via `buildSystemContext(tools, componentId)` inline, rather than relying on a missing `window.__REASONING_CONTEXT__` global. Self-contained ~25 LOC function that formats tool declarations and response guidelines.
 
-9. **Tool dispatch.** When `useReasoning` returns tool calls, the AbstractComponent wrapper dispatches them via `onToolCall`. Implement the `report` pattern: child invokes `report` tool, parent receives structured data. Verify bidirectional communication through the tree.
+9. **Tool dispatch via `useReasoning`** -- DONE. The hook dispatches tool calls via `onToolCall` callback in options. The authoring prompt now explicitly instructs authored components to pass `{ tools, onToolCall, componentId }` through to `useReasoning`, enabling automatic tool dispatch including the `report` pattern.
 
-10. **Self-modification via `__reshape`.** When `useReasoning` returns a reshape signal, the wrapper initiates re-authoring with the existing source + reshape reason as context. Write new source to VFS, build, Refresh. Verify state preservation (atoms survive, local state best-effort).
+10. **Self-modification via `__reshape`** -- DONE. The `handleToolCall` callback intercepts `__reshape`, records a mutation entry with the current source as `previousSource`, then forces a shape mismatch to trigger re-authoring. Re-authoring includes existing source as context.
 
-11. **Mutation history + rollback.** Store `previousSource` on every VFS write. Error boundary tracks crash count and rolls back after N consecutive crashes. Verify rollback produces a working component.
+11. **Mutation history + rollback** -- DONE. `window.__MUTATIONS__` stores up to 50 `MutationEntry` records. Every authoring, re-authoring, and reshape records `previousSource` and `newSource`. Error boundary tracks consecutive crash count; on 3rd crash, `getPreviousSource()` finds the last known-good source and triggers rollback (VFS write + registry + rebuild). ~50 LOC for mutation tracking + ~25 LOC for rollback logic.
 
-**Milestone:** A component reasons about input deltas, invokes tools, reports to its parent, and can reshape itself when needed. The error boundary recovers from bad self-modifications.
+12. **Authoring prompt polish** -- DONE. Stronger "no markdown fences" instruction. Clearer `useReasoning` usage with `componentId` and function-prompt pattern. Explicit guidance on `report` tool as canonical upward channel. Better handling of null result on initial render.
+
+**Milestone:** A component reasons about input deltas, invokes tools, reports to its parent, and can reshape itself when needed. The error boundary recovers from bad self-modifications by rolling back to previous source after 3 crashes.
 
 ### Phase 3: Composition
 

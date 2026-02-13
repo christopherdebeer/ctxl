@@ -27,6 +27,23 @@ interface ReasoningOptions {
   tools?: ToolDef[];
   onToolCall?: (name: string, args: any) => void;
   debounceMs?: number;
+  componentId?: string;
+}
+
+// ---- Build system context from tools ----
+
+function buildSystemContext(tools: ToolDef[], componentId?: string): string {
+  const id = componentId || "anonymous";
+  const toolLines = tools.map(t => {
+    let line = "- " + t.name + ": " + t.description;
+    if (t.schema) {
+      const fields = Object.entries(t.schema).map(function(e) { return e[0] + ": " + e[1]; }).join(", ");
+      line += " (args: { " + fields + " })";
+    }
+    return line;
+  }).join("\\n");
+
+  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } ONLY if you need capabilities your current source doesn't have (rare)\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
 }
 
 // ---- useReasoning ----
@@ -89,14 +106,13 @@ export function useReasoning(
       fireCountRef.current++;
 
       try {
-        // Build context and call LLM
         const config = runtime.config;
         if (config.apiMode === "none") {
           setResult({ content: "No API configured." });
           return;
         }
 
-        const { tools = [], onToolCall } = optionsRef.current;
+        const { tools = [], onToolCall, componentId } = optionsRef.current;
 
         // Build the reason_response tool for structured output
         const reasonTool = {
@@ -128,8 +144,8 @@ export function useReasoning(
           },
         };
 
-        // System prompt from host
-        const system = (window as any).__REASONING_CONTEXT__ || "You are a React component reasoning about input changes. Respond using the reason_response tool.";
+        // Build system context from tools (self-contained, no window global needed)
+        const system = buildSystemContext(tools, componentId);
 
         const messages = [{ role: "user", content: resolvedPrompt }];
         const extras = {
