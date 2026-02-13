@@ -37,6 +37,31 @@ interface ReasoningOptions {
   maxTurns?: number;
 }
 
+// ---- Runtime Context ----
+// Provides runtime + atoms via React Context so that library consumers
+// can wrap their existing React tree in <RuntimeProvider> and have
+// AbstractComponent, useAtom, and useReasoning work without globals.
+
+interface RuntimeContextValue {
+  runtime: any;
+  atoms: any;
+}
+
+export const RuntimeContext = createContext<RuntimeContextValue | null>(null);
+
+/**
+ * Read runtime + atoms from React Context, falling back to window globals.
+ * This allows VFS code to work both inside a <RuntimeProvider> tree
+ * and in the legacy globals-only boot path.
+ */
+export function useRuntimeContext(): RuntimeContextValue {
+  const ctx = useContext(RuntimeContext);
+  return ctx || {
+    runtime: (window as any).__RUNTIME__,
+    atoms: (window as any).__ATOMS__,
+  };
+}
+
 // ---- Tool Context ----
 // Parent-provided tools are injected via React Context by AbstractComponent.
 // useReasoning reads from this context automatically — child components
@@ -53,7 +78,7 @@ export const ToolContext = createContext<ToolContextValue | null>(null);
 
 // ---- Build system context from tools ----
 
-function buildSystemContext(tools: ToolDef[], componentId?: string): string {
+function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?: RuntimeContextValue | null): string {
   const id = componentId || "anonymous";
   const toolLines = tools.map(t => {
     let line = "- " + t.name + ": " + t.description;
@@ -67,7 +92,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string): string {
   // Inspection context: atom state + sibling components (on-demand visibility)
   let inspectionBlock = "";
   try {
-    const atoms = (window as any).__ATOMS__;
+    const atoms = runtimeCtx?.atoms || (window as any).__ATOMS__;
     if (atoms && typeof atoms.keys === "function") {
       const atomKeys = atoms.keys();
       if (atomKeys.length > 0) {
@@ -116,6 +141,9 @@ export function useReasoning(
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
+  // Runtime from context (falls back to globals)
+  const { runtime: ctxRuntime } = useRuntimeContext();
+
   // Parent tool context (provided by AbstractComponent)
   const parentCtx = useContext(ToolContext);
   const parentCtxRef = useRef(parentCtx);
@@ -141,7 +169,7 @@ export function useReasoning(
     }
 
     const doReason = async () => {
-      const runtime = (window as any).__RUNTIME__;
+      const runtime = ctxRuntime;
       if (!runtime) return;
 
       const resolvedPrompt = typeof prompt === "function"
@@ -223,7 +251,7 @@ export function useReasoning(
         };
 
         // Build system context from merged tools
-        const system = buildSystemContext(allTools, componentId);
+        const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
 
         const conversationMessages: any[] = [{ role: "user", content: resolvedPrompt }];
         const extras = {
@@ -348,7 +376,7 @@ export function useReasoning(
  *   const [value, setValue] = useAtom("myKey", defaultValue);
  */
 export function useAtom<T = any>(key: string, defaultValue?: T): [T, (v: T | ((prev: T) => T)) => void] {
-  const registry = (window as any).__ATOMS__;
+  const { atoms: registry } = useRuntimeContext();
   if (!registry) {
     // Fallback: no atom registry, use local state
     const [val, setVal] = useState<T>(defaultValue as T);

@@ -8,6 +8,12 @@
  *   import { create } from './ctxl';
  *   const system = await create({ target: el, apiMode: 'proxy' });
  *
+ * Usage with React provider (recommended for existing apps):
+ *   import { CtxlProvider } from './ctxl';
+ *   <CtxlProvider apiMode="proxy">
+ *     <AbstractComponent id="chat" inputs={{ topic: "React" }} />
+ *   </CtxlProvider>
+ *
  * Usage as script:
  *   <script type="module">
  *     const { create } = await import('./src/ctxl.js');
@@ -29,6 +35,14 @@ export { buildAuthoringPrompt, buildReasoningContext } from "./prompts";
 export { createRuntime } from "./runtime";
 export { SEEDS } from "./seeds-v2";
 
+// Shared init (used by CtxlProvider and boot.ts)
+export { initSystem } from "./init";
+export type { InitSystemOptions, InitSystemResult } from "./init";
+
+// React provider for library consumers
+export { CtxlProvider, useCtxlRuntime, HostRuntimeContext } from "./context";
+export type { CtxlProviderProps, RuntimeContextValue } from "./context";
+
 // Re-export types
 export type {
   IDB,
@@ -49,63 +63,27 @@ export type {
 } from "./types";
 
 // Imports needed by create()
-import { createIDB } from "./idb";
-import { createAtomRegistry } from "./atoms";
+import { initSystem } from "./init";
 import { createRuntime } from "./runtime";
+import { createAtomRegistry } from "./atoms";
+import { createIDB } from "./idb";
 import { SEEDS } from "./seeds-v2";
 
 /**
  * High-level API: create and boot a complete system.
+ *
+ * Uses the same initSystem() code path as <CtxlProvider>,
+ * then triggers the first buildAndRun.
  */
 export async function create(options: CreateOptions = {}): Promise<CreateResult> {
-  const {
-    target,
-    seeds = SEEDS,
-    apiMode = "none",
-    apiKey = "",
-    proxyUrl = "/api/chat",
-    model = "claude-sonnet-4-5-20250929",
-    esbuildUrl = "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js",
-    esbuildWasmUrl = "https://unpkg.com/esbuild-wasm@0.24.2/esbuild.wasm",
-    dbName = "ctxl_vfs",
-    callbacks = {},
-  } = options;
+  const { target, callbacks = {}, ...rest } = options;
 
-  // 1. Import esbuild
-  const esbuild = await import(/* @vite-ignore */ esbuildUrl);
-
-  // 2. IndexedDB
-  const idb = createIDB(dbName);
-
-  // 3. Atom registry (persistent shared state)
-  const atomRegistry = createAtomRegistry();
-  await atomRegistry.hydrate(idb);
-  (window as any).__ATOMS__ = atomRegistry;
-
-  // 4. Load or seed VFS
-  const files = new Map<string, string>();
-  const rows = await idb.getAll();
-  const vfsRows = rows.filter(r => !r.path.startsWith("__atom:"));
-  if (vfsRows.length === 0) {
-    for (const [p, t] of seeds.entries()) {
-      files.set(p, t);
-      await idb.put(p, t);
-    }
-  } else {
-    for (const r of vfsRows) files.set(r.path, r.text);
-  }
-
-  // 5. Create runtime
-  const config = { apiMode, apiKey, proxyUrl, model };
-  const runtime = createRuntime({ esbuild, idb, files, config, callbacks });
-  window.__RUNTIME__ = runtime;
-
-  // 6. Ensure target element
+  // Ensure target element
   if (target && !target.id) target.id = "root";
 
-  // 7. Initialize and boot
-  await runtime.initRefresh();
-  await runtime.initEsbuild(esbuildWasmUrl);
+  const { runtime, files, idb } = await initSystem({ callbacks, ...rest });
+
+  // Trigger first build
   await runtime.buildAndRun("create");
 
   return { runtime, files, idb };
