@@ -43,7 +43,33 @@ function buildSystemContext(tools: ToolDef[], componentId?: string): string {
     return line;
   }).join("\\n");
 
-  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } ONLY if you need capabilities your current source doesn't have (rare)\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
+  // Inspection context: atom state + sibling components (on-demand visibility)
+  let inspectionBlock = "";
+  try {
+    const atoms = (window as any).__ATOMS__;
+    if (atoms && typeof atoms.keys === "function") {
+      const atomKeys = atoms.keys();
+      if (atomKeys.length > 0) {
+        const atomSummary = atomKeys.map((k: string) => {
+          try {
+            const v = atoms.get(k)?.get();
+            const s = JSON.stringify(v);
+            return "  " + k + ": " + (s && s.length > 80 ? s.slice(0, 80) + "..." : s);
+          } catch { return "  " + k + ": <unreadable>"; }
+        }).join("\\n");
+        inspectionBlock += "\\n\\nSHARED STATE (atoms):\\n" + atomSummary;
+      }
+    }
+    const components = (window as any).__COMPONENTS__;
+    if (components) {
+      const siblings = Object.keys(components).filter(k => k !== id);
+      if (siblings.length > 0) {
+        inspectionBlock += "\\n\\nSIBLING COMPONENTS: " + siblings.join(", ");
+      }
+    }
+  } catch {}
+
+  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + inspectionBlock + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } ONLY if you need capabilities your current source doesn't have (rare)\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
 }
 
 // ---- useReasoning ----

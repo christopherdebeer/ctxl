@@ -128,15 +128,40 @@ class ComponentErrorBoundary extends Component<EBProps, EBState> {
 }
 
 // ---- Shape comparison ----
+// Tracks key names + value types for precise structural change detection.
 
 function getShape(obj: Record<string, any> | undefined): string {
   if (!obj) return "";
-  return Object.keys(obj).sort().join(",");
+  return Object.keys(obj).sort().map(k => {
+    const v = obj[k];
+    const t = v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+    return k + ":" + t;
+  }).join(",");
 }
 
 function getToolShape(tools: any[] | undefined): string {
   if (!tools) return "";
-  return tools.map((t: any) => t.name).sort().join(",");
+  return tools.map((t: any) => {
+    const sk = t.schema ? Object.keys(t.schema).sort().join("+") : "";
+    return t.name + (sk ? "(" + sk + ")" : "");
+  }).sort().join(",");
+}
+
+// ---- Freshness tracking ----
+// Tracks reshape requests per component to detect stale authoring.
+
+const reshapeCounters: Record<string, { count: number; since: number }> = {};
+
+function trackReshape(componentId: string): void {
+  const entry = reshapeCounters[componentId] ||= { count: 0, since: Date.now() };
+  entry.count++;
+  if (entry.count >= 3) {
+    console.warn("[AC:" + componentId + "] Frequent reshape requests (" + entry.count + " since last authoring). Consider revising guidelines.");
+  }
+}
+
+function resetReshapeCounter(componentId: string): void {
+  reshapeCounters[componentId] = { count: 0, since: Date.now() };
 }
 
 // ---- AbstractComponent ----
@@ -257,6 +282,7 @@ export function AbstractComponent({
         });
 
         shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
+        resetReshapeCounter(id);
         setPhase("ready");
       } catch (err: any) {
         setPhase("error");
@@ -306,6 +332,7 @@ export function AbstractComponent({
   // Handle tool calls including __reshape
   const handleToolCall = useCallback((name: string, args: any) => {
     if (name === "__reshape") {
+      trackReshape(id);
       // Record the reshape trigger before re-authoring
       const runtime = (window as any).__RUNTIME__;
       if (runtime) {
