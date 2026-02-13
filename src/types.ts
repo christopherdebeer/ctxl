@@ -11,26 +11,6 @@ export interface IDB {
   clear(): Promise<void>;
 }
 
-// ---- State ----
-
-export type AgentMemory = Record<string, any>;
-
-export interface StateMeta {
-  cycle: number;
-  mutations: Array<{ timestamp: number; reason: string; path: string }>;
-  thinkHistory: Array<{ timestamp: number; prompt: string; result: ThinkResult }>;
-}
-
-export interface StateStore {
-  memory: AgentMemory;
-  meta: StateMeta;
-  _listeners: Set<(memory: AgentMemory) => void>;
-  get(): AgentMemory;
-  set(patch: Partial<AgentMemory>): void;
-  subscribe(fn: (memory: AgentMemory) => void): () => boolean;
-  _notify(): void;
-}
-
 // ---- Config ----
 
 export type ApiMode = "none" | "anthropic" | "proxy";
@@ -40,21 +20,6 @@ export interface RuntimeConfig {
   apiKey: string;
   proxyUrl: string;
   model: string;
-}
-
-// ---- LLM ----
-
-export interface LLMResult {
-  error: string | null;
-  content: string | null;
-}
-
-export interface ThinkResult {
-  content?: string;
-  actions?: Record<string, any>[];
-  structured?: unknown;
-  shouldEvolve?: boolean;
-  evolveReason?: string;
 }
 
 // ---- Callbacks ----
@@ -99,36 +64,31 @@ export interface Esbuild {
 
 // ---- Runtime ----
 
-export interface ComposeResult {
-  error: string | null;
-  source: string | null;
-  path: string;
-}
-
-export interface ConversationMessage {
-  role: "user" | "agent";
-  content: string;
-}
-
 export interface Runtime {
   files: Map<string, string>;
   disposers: Array<() => void>;
   config: RuntimeConfig;
   RefreshRuntime: any;
-  AgentModule: { default: any } | null;
-  root: any;
-  _mounted: boolean;
+  idb: IDB;
+
+  // Config
   saveConfig(): void;
-  _callLLM(systemPrompt: string, userPrompt: string): Promise<LLMResult>;
-  think(prompt: string, agentPath: string, history?: ConversationMessage[]): Promise<ThinkResult>;
-  evolve(prompt: string, agentPath: string): Promise<LLMResult>;
-  compose(path: string, purpose: string, parentPath?: string): Promise<ComposeResult>;
-  reason(prompt: string, agentPath: string): Promise<LLMResult>;
+
+  // v2: Unified LLM transport
+  callLLM(system: string, messages: Array<{ role: string; content: any }>, extras?: Record<string, any>): Promise<any>;
+
+  // v2: Authoring
+  buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], guidelines?: string, existingSource?: string): string;
+  regenerateRegistry(): void;
+
+  // Build pipeline
   applyPatch(patches: FilePatch[]): Promise<void>;
   runDisposers(): void;
   buildBundle(entry?: string): Promise<{ code: string; ms: number }>;
   importBundle(code: string): Promise<unknown>;
   buildAndRun(reason?: string): Promise<void>;
+
+  // Init
   initRefresh(): Promise<boolean>;
   initEsbuild(wasmURL?: string): Promise<void>;
   reset(): Promise<void>;
@@ -139,7 +99,6 @@ export interface Runtime {
 export interface RuntimeOptions {
   esbuild: Esbuild;
   idb: IDB;
-  stateStore: StateStore;
   files: Map<string, string>;
   config: RuntimeConfig;
   callbacks?: RuntimeCallbacks;
@@ -163,13 +122,8 @@ export interface CreateOptions {
 export interface CreateResult {
   runtime: Runtime;
   files: Map<string, string>;
-  stateStore: StateStore;
   idb: IDB;
 }
-
-// ====================================================================
-// v2: Abstract Component types
-// ====================================================================
 
 // ---- Tools ----
 
@@ -188,7 +142,7 @@ export interface ReasoningResult {
   reshape?: { reason: string };
 }
 
-// ---- Mutations (v2) ----
+// ---- Mutations ----
 
 export interface MutationRecord {
   id: string;

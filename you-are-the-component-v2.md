@@ -598,41 +598,34 @@ This is a survivable event, not a fatal error. The biological analogy: a framesh
 
 ## 14. Implementation Design
 
-### Module structure (implemented)
+### Module structure
 
 ```
 src/
-  ctxl.ts              -- Public API: create(), createV2(), exports all modules
-  types.ts             -- All TypeScript interfaces (v1 + v2)
+  ctxl.ts              -- Public API: create(), exports all modules
+  types.ts             -- All TypeScript interfaces
 
-  # Build infrastructure (the novel layer, unchanged)
+  # Build infrastructure (the novel layer)
   vfs-plugin.ts        -- esbuild VFS resolver (65 LOC)
   refresh.ts           -- React Refresh regex injection (37 LOC)
   idb.ts               -- IndexedDB persistence (56 LOC)
 
   # Host-side runtime
-  runtime.ts           -- Build pipeline + v1 compat + v2 bridges (callLLM, regenerateRegistry, buildAuthoringPrompt)
-  llm.ts               -- Unified LLM transport: single callLLM(config, system, messages, extras) (~85 LOC)
-  atoms.ts             -- Atom registry with IDB persistence, hydration, pub/sub (~100 LOC)
+  runtime.ts           -- Build pipeline + LLM bridge + authoring + registry (~195 LOC)
+  llm.ts               -- Unified LLM transport (~85 LOC)
+  atoms.ts             -- Atom registry with IDB persistence, pub/sub (~100 LOC)
 
   # Prompts
-  prompts.ts           -- v1 prompts (kept) + buildAuthoringPrompt + buildReasoningContext
+  prompts.ts           -- buildAuthoringPrompt + buildReasoningContext (~135 LOC)
 
   # VFS seed sources (compiled by esbuild in-browser)
-  seed-ctxl-hooks.ts   -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom hooks
-  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper
+  seed-ctxl-hooks.ts   -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom
+  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper + mutation history + rollback + authoring queue
   seed-v2-main.ts      -- VFS /src/main.tsx: renders root <AbstractComponent>
-  seeds-v2.ts          -- Assembles v2 seed map (4 VFS files)
-
-  # v1 seeds (preserved for backward compat)
-  seeds.ts             -- v1 seed map
-  seed-main.ts         -- v1 main.tsx
-  seed-agent.ts        -- v1 agent component
-  seed-agent-mount.ts  -- v1 agent mount + error boundary
-  seed-use-agent-state.ts -- v1 hooks
+  seeds-v2.ts          -- Assembles seed map (4 VFS files)
 
   # Dev harness
-  boot.ts              -- Dev UI + atom registry setup + v2 detection (?v2 param)
+  boot.ts              -- Dev UI + atom registry + VFS seeding
 ```
 
 ### Key interfaces
@@ -793,59 +786,57 @@ interface Runtime {
 
 **Milestone:** A component reasons about input deltas, invokes tools, reports to its parent, and can reshape itself when needed. The error boundary recovers from bad self-modifications by rolling back to previous source after 3 crashes.
 
-### Phase 3: Composition
+### Phase 3: Composition -- IMPLEMENTED
 
 **Recursive self-decomposition. The tree grows.**
 
-12. **Child authoring.** A parent component renders `<AbstractComponent id="child-X" ... />`. On mount, the child authors itself. Verify that parent and child have independent reasoning hooks, independent atoms, and independent self-modification.
+12. **Authoring queue** -- DONE. Added `enqueueAuthoring()` to serialise VFS writes + `buildAndRun` calls while allowing LLM calls to run concurrently. Prevents race conditions when multiple children need authoring simultaneously. ~10 LOC.
 
-13. **Shared atoms.** Parent creates atoms, passes them to children via inputs. Multiple children subscribe to the same atom. Verify synchronisation: write in one child, read in sibling.
+13. **Child authoring** -- DONE (architecturally complete). An authored component renders `<AbstractComponent id="child" .../>`. The VFS plugin resolves `../ctxl/hooks` and `../ctxl/abstract-component` from `/src/ac/` correctly. The registry regeneration scans all `/src/ac/*.tsx` files. Independent reasoning hooks, atoms, and error boundaries per component.
 
-14. **Reusable components.** Multiple instances with the same `id` but different `key`s. Verify: shared source, isolated local state, shared atoms where passed.
+14. **Shared atoms** -- DONE (architecturally complete). `useAtom(key, default)` with the same key across any component shares state via `window.__ATOMS__`. Atoms persist in IDB with `__atom:` prefix, filtered out during VFS loading.
 
-15. **Recursive decomposition.** Root component authors itself, renders child AbstractComponents, which author themselves and render their own children. Verify that the tree stabilises (authoring is one-time, subsequent renders use cache).
+15. **Reusable components** -- DONE (architecturally complete). Same `id` = same VFS source. Different React `key` = isolated local state. Atoms shared by key, not by component identity.
 
-**Milestone:** A user types an objective. The root decomposes into tasks. Each task is an AbstractComponent that authors itself, reasons about its inputs, and reports progress to the parent. The tree is alive.
+16. **Recursive decomposition** -- DONE (architecturally complete). Root is `<AbstractComponent id="root">` which can author children, which can author their own children. The authoring queue ensures builds don't overlap. Subsequent page loads render all components from IDB cache (zero authoring latency).
+
+17. **v1 legacy removal** -- DONE. Removed: `state.ts`, `seeds.ts`, `seed-main.ts`, `seed-agent.ts`, `seed-agent-mount.ts`, `seed-use-agent-state.ts`. Cleaned: `types.ts` (removed StateStore, AgentMemory, ThinkResult, ComposeResult, ConversationMessage, StateMeta; simplified Runtime interface), `prompts.ts` (removed buildThinkPrompt/Evolve/Compose), `runtime.ts` (removed think/evolve/compose/_callLLM/reason methods and stateStore dependency), `ctxl.ts` (removed v1 exports, made `create()` use v2 seeds by default), `boot.ts` (removed v1 state store, seed detection, simplified to v2-only), `global.d.ts` (removed __AGENT_STATE__). Total: ~500 LOC removed across 6 deleted files and 6 cleaned files.
+
+**Milestone:** The system supports recursive self-decomposition. Components author children by rendering `<AbstractComponent>`. Shared atoms coordinate state across the tree. Builds are serialised to prevent race conditions. v1 legacy has been fully removed -- the codebase is now v2-canonical.
 
 ### Phase 4: Robustness
 
 **Production hardening.**
 
-16. **Parallel authoring.** When multiple children need authoring simultaneously, run LLM calls in parallel (not sequential). Reduces first-load latency from N * latency to max(latencies).
+18. **Shape change detection refinement.** Edge case: gradual drift. Consider a "freshness" heuristic -- if the authoring was N mutations ago and reasoning keeps hitting walls, suggest re-authoring.
 
-17. **Shape change detection.** Implement shallow comparison of input keys and tool names. Trigger re-authoring on shape change, delta-reasoning on value change. Edge case: gradual drift. Consider a "freshness" heuristic -- if the authoring was N mutations ago and reasoning keeps hitting walls, suggest re-authoring.
-
-18. **Inspection tools.** Implement the `inspect_input`, `inspect_sibling`, `query_state` tool pattern. Components can pull context on demand instead of receiving it in the system prompt.
-
-19. **Error boundary hardening.** Auto-recovery from hook violations. Consecutive crash tracking with rollback. Recovery logging for debugging.
+19. **Inspection tools.** Implement the `inspect_input`, `inspect_sibling`, `query_state` tool pattern. Components can pull context on demand instead of receiving it in the system prompt.
 
 20. **Dev harness update.** Update the boot.ts dev UI to understand the new architecture: show the component tree, per-component VFS source, atom values, reasoning history, mutation log. The harness observes the system but doesn't participate in it.
 
-**Milestone:** The system handles edge cases gracefully: bad authoring, tool failures, self-modification crashes, shape changes, parallel authoring. The dev harness provides full visibility.
+**Milestone:** The system handles edge cases gracefully: bad authoring, tool failures, self-modification crashes, shape changes. The dev harness provides full visibility.
 
 ---
 
-## 16. What Remains from v1
+## 16. Architecture After v1 Removal
 
-The build infrastructure is unchanged -- it was always the right layer:
+The codebase is now v2-canonical. No v1 code remains. The full system:
 
+**Build infrastructure** (the genuinely novel layer):
 - **VFS + IDB** -- source persistence
 - **esbuild-wasm + VFS plugin** -- in-browser compilation
 - **React Refresh injection** -- state-preserving hot swaps
-- **Error boundaries** -- immune system
-- **External state** -- now scoped atoms instead of global store
 
-What changes is everything above the build layer:
+**Host-side runtime:**
+- **runtime.ts** -- build pipeline, LLM bridge, authoring prompt, registry regeneration
+- **llm.ts** -- unified LLM transport (anthropic direct / proxy)
+- **atoms.ts** -- scoped external state with IDB persistence
 
-| v1 | v2 |
-|---|---|
-| `self.think()` -- explicit LLM call | `useReasoning()` -- hook-driven, fires on dep change |
-| `self.evolve()` -- total source rewrite | `__reshape` tool -- rare escalation, same build infra |
-| `self.compose()` -- file-level child generation | `<AbstractComponent>` -- render children, they author themselves |
-| 3 prompt builders (think/evolve/compose) | 1 authoring prompt + per-hook reasoning context |
-| Global `window.__AGENT_STATE__` | Scoped atoms |
-| AgentMount + AgentToolbar + seed-agent | `<AbstractComponent>` wrapper + minimal seed |
-| `AgentSelf` with 6 methods | Tools defined by parent, `useReasoning` for perception |
+**VFS seeds** (compiled in-browser by esbuild):
+- **hooks.ts** -- `useReasoning` (delta-driven perception) + `useAtom` (shared state)
+- **abstract-component.tsx** -- identity resolution, authoring, mutation history, error boundary + rollback, authoring queue
+- **main.tsx** -- renders root `<AbstractComponent>`
+- **ac/_registry.ts** -- auto-generated component registry
 
 The system gets simpler by aligning with React instead of building alongside it.
 

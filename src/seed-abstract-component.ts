@@ -50,6 +50,16 @@ function getPreviousSource(componentId: string): string | null {
   return null;
 }
 
+// ---- Authoring Queue ----
+// Serialises authoring + buildAndRun to prevent concurrent builds.
+
+let authoringQueue: Promise<void> = Promise.resolve();
+
+function enqueueAuthoring(fn: () => Promise<void>): Promise<void> {
+  authoringQueue = authoringQueue.then(fn, fn);
+  return authoringQueue;
+}
+
 // ---- Error Boundary ----
 
 interface EBProps {
@@ -184,13 +194,15 @@ export function AbstractComponent({
     authoringRef.current = true;
     setPhase("authoring");
 
+    // LLM calls can run in parallel, but buildAndRun must be serialised.
+    // Split authoring into: (1) LLM call, (2) queued VFS write + rebuild.
     (async () => {
       try {
         const vfsPath = "/src/ac/" + id + ".tsx";
         const existingSource = runtime.files.get(vfsPath) || "";
         const isReauthor = shapeChanged && !!existingSource;
 
-        // Call LLM to author the component
+        // Call LLM to author the component (can run concurrently with other LLM calls)
         const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, isReauthor ? existingSource : undefined);
         const messages = [{ role: "user", content: "Author this component." }];
         const response = await runtime.callLLM(system, messages);
@@ -222,24 +234,27 @@ export function AbstractComponent({
           return;
         }
 
-        // Record mutation history (before overwriting)
-        recordMutation({
-          componentId: id,
-          trigger: isReauthor ? "re-author:shape-change" : "author:first-mount",
-          previousSource: existingSource,
-          newSource: source,
-          outcome: "swap",
+        // Serialise VFS write + rebuild to prevent concurrent builds
+        await enqueueAuthoring(async () => {
+          // Record mutation history (before overwriting)
+          recordMutation({
+            componentId: id,
+            trigger: isReauthor ? "re-author:shape-change" : "author:first-mount",
+            previousSource: existingSource,
+            newSource: source,
+            outcome: "swap",
+          });
+
+          // Write to VFS and rebuild
+          runtime.files.set(vfsPath, source);
+          await runtime.idb.put(vfsPath, source);
+
+          // Update the component registry file
+          runtime.regenerateRegistry();
+
+          // Rebuild — after this, window.__COMPONENTS__[id] will exist
+          await runtime.buildAndRun("author:" + id);
         });
-
-        // Write to VFS and rebuild
-        runtime.files.set(vfsPath, source);
-        await runtime.idb.put(vfsPath, source);
-
-        // Update the component registry file
-        runtime.regenerateRegistry();
-
-        // Rebuild — after this, window.__COMPONENTS__[id] will exist
-        await runtime.buildAndRun("author:" + id);
 
         shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
         setPhase("ready");

@@ -1,12 +1,11 @@
 /**
- * ctxl — Agent Component Library
+ * ctxl — Self-Authoring React Component Library
  *
- * A self-contained runtime for LLM-embodied React components.
- * Components can think (reason within current form) and evolve
- * (rewrite their own source code when current capabilities are insufficient).
+ * A runtime for LLM-embodied React components that author themselves on first
+ * mount, reason about input changes via hooks, and can rewrite their own source.
  *
  * Usage as ES module:
- *   import { create, DEFAULT_SEEDS } from './ctxl';
+ *   import { create } from './ctxl';
  *   const system = await create({ target: el, apiMode: 'proxy' });
  *
  * Usage as script:
@@ -24,27 +23,18 @@ import type { CreateOptions, CreateResult } from "./types";
 export { createIDB } from "./idb";
 export { injectReactRefresh } from "./refresh";
 export { createVFSPlugin } from "./vfs-plugin";
-export { createStateStore } from "./state";
 export { createAtomRegistry } from "./atoms";
 export { callLLM, extractText, extractToolUse } from "./llm";
-export { buildThinkPrompt, buildEvolvePrompt, buildComposePrompt, buildAuthoringPrompt, buildReasoningContext } from "./prompts";
+export { buildAuthoringPrompt, buildReasoningContext } from "./prompts";
 export { createRuntime } from "./runtime";
-export { DEFAULT_SEEDS } from "./seeds";
-export { V2_SEEDS } from "./seeds-v2";
+export { SEEDS } from "./seeds-v2";
 
 // Re-export types
 export type {
   IDB,
   VFSRow,
-  StateStore,
-  AgentMemory,
-  StateMeta,
   RuntimeConfig,
   ApiMode,
-  LLMResult,
-  ThinkResult,
-  ComposeResult,
-  ConversationMessage,
   RuntimeCallbacks,
   FilePatch,
   EsbuildPlugin,
@@ -60,19 +50,17 @@ export type {
 
 // Imports needed by create()
 import { createIDB } from "./idb";
-import { createStateStore } from "./state";
 import { createAtomRegistry } from "./atoms";
 import { createRuntime } from "./runtime";
-import { DEFAULT_SEEDS } from "./seeds";
-import { V2_SEEDS } from "./seeds-v2";
+import { SEEDS } from "./seeds-v2";
 
 /**
- * High-level API: create and boot a complete agent system.
+ * High-level API: create and boot a complete system.
  */
 export async function create(options: CreateOptions = {}): Promise<CreateResult> {
   const {
     target,
-    seeds = DEFAULT_SEEDS,
+    seeds = SEEDS,
     apiMode = "none",
     apiKey = "",
     proxyUrl = "/api/chat",
@@ -89,10 +77,7 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
   // 2. IndexedDB
   const idb = createIDB(dbName);
 
-  // 3. State store + atom registry
-  const stateStore = createStateStore();
-  window.__AGENT_STATE__ = stateStore;
-
+  // 3. Atom registry (persistent shared state)
   const atomRegistry = createAtomRegistry();
   await atomRegistry.hydrate(idb);
   (window as any).__ATOMS__ = atomRegistry;
@@ -112,7 +97,7 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
 
   // 5. Create runtime
   const config = { apiMode, apiKey, proxyUrl, model };
-  const runtime = createRuntime({ esbuild, idb, stateStore, files, config, callbacks });
+  const runtime = createRuntime({ esbuild, idb, files, config, callbacks });
   window.__RUNTIME__ = runtime;
 
   // 6. Ensure target element
@@ -123,17 +108,10 @@ export async function create(options: CreateOptions = {}): Promise<CreateResult>
   await runtime.initEsbuild(esbuildWasmUrl);
   await runtime.buildAndRun("create");
 
-  return { runtime, files, stateStore, idb };
-}
-
-/**
- * High-level v2 API: create a system using AbstractComponent seeds.
- */
-export async function createV2(options: Omit<CreateOptions, "seeds"> = {}): Promise<CreateResult> {
-  return create({ ...options, seeds: V2_SEEDS });
+  return { runtime, files, idb };
 }
 
 // Register on window for script-tag usage
 if (typeof window !== "undefined") {
-  window.ctxl = { create, createV2, createRuntime, createStateStore, createAtomRegistry, createIDB, DEFAULT_SEEDS, V2_SEEDS };
+  window.ctxl = { create, createRuntime, createAtomRegistry, createIDB, SEEDS };
 }
