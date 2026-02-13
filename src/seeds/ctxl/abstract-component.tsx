@@ -11,7 +11,8 @@
  * Registry:  src/seeds-v2.ts
  */
 
-import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
+import type { ReactNode } from "react";
 import { ToolContext } from "./hooks";
 
 // ---- Mutation History ----
@@ -67,7 +68,7 @@ function enqueueAuthoring(fn: () => Promise<void>): Promise<void> {
 
 interface EBProps {
   componentId: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
   onCrash: (error: Error, crashCount: number) => void;
 }
 
@@ -99,31 +100,33 @@ class ComponentErrorBoundary extends Component<EBProps, EBState> {
   render() {
     if (this.state.hasError) {
       const { error, crashCount } = this.state;
-      return React.createElement("div", {
-        style: {
+      return (
+        <div style={{
           padding: "20px", margin: "10px", border: "1px solid #c00",
           borderRadius: "8px", background: "#1a0000", color: "#f88",
           fontFamily: "monospace", fontSize: "13px",
-        }
-      },
-        React.createElement("div", { style: { fontWeight: "bold", marginBottom: "8px" } },
-          "Component error [" + this.props.componentId + "] (crash #" + crashCount + ")"
-        ),
-        React.createElement("pre", { style: { whiteSpace: "pre-wrap", color: "#faa", margin: "8px 0" } },
-          error?.message || "Unknown error"
-        ),
-        crashCount >= 3
-          ? React.createElement("div", { style: { color: "#fa0", marginBottom: "8px" } },
-              "Multiple crashes detected. Attempting rollback to last known-good source..."
-            )
-          : null,
-        React.createElement("button", {
-          onClick: this.reset,
-          style: {
-            padding: "6px 16px", background: "#333", color: "#fff",
-            border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
-          },
-        }, "Retry"),
+        }}>
+          <div style={{ fontWeight: "bold", marginBottom: "8px" }}>
+            Component error [{this.props.componentId}] (crash #{crashCount})
+          </div>
+          <pre style={{ whiteSpace: "pre-wrap", color: "#faa", margin: "8px 0" }}>
+            {error?.message || "Unknown error"}
+          </pre>
+          {crashCount >= 3 && (
+            <div style={{ color: "#fa0", marginBottom: "8px" }}>
+              Multiple crashes detected. Attempting rollback to last known-good source...
+            </div>
+          )}
+          <button
+            onClick={this.reset}
+            style={{
+              padding: "6px 16px", background: "#333", color: "#fff",
+              border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
+        </div>
       );
     }
     return this.props.children;
@@ -187,7 +190,7 @@ export function AbstractComponent({
   tools?: Array<{ name: string; description: string; schema?: Record<string, string>; handler: (args: any) => any }>;
   handlers?: Record<string, { description: string; fn: (...args: any[]) => any }>;
   guidelines?: string;
-  fallback?: React.ReactNode;
+  fallback?: ReactNode;
 }) {
   const [phase, setPhase] = useState<"checking" | "authoring" | "ready" | "error">("checking");
   const [errorMsg, setErrorMsg] = useState("");
@@ -410,60 +413,55 @@ export function AbstractComponent({
 
   // Render states
   if (phase === "error") {
-    return React.createElement("div", {
-      style: {
+    return (
+      <div style={{
         padding: "20px", margin: "10px", border: "1px solid #c00",
         borderRadius: "8px", background: "#1a0000", color: "#f88",
         fontFamily: "monospace", fontSize: "13px",
-      }
-    },
-      React.createElement("div", { style: { fontWeight: "bold", marginBottom: "8px" } },
-        "Authoring failed [" + id + "]"
-      ),
-      React.createElement("pre", { style: { whiteSpace: "pre-wrap", color: "#faa" } }, errorMsg),
-      React.createElement("button", {
-        onClick: () => { setPhase("checking"); setErrorMsg(""); },
-        style: {
-          marginTop: "8px", padding: "6px 16px", background: "#333",
-          color: "#fff", border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
-        },
-      }, "Retry"),
+      }}>
+        <div style={{ fontWeight: "bold", marginBottom: "8px" }}>
+          Authoring failed [{id}]
+        </div>
+        <pre style={{ whiteSpace: "pre-wrap", color: "#faa" }}>{errorMsg}</pre>
+        <button
+          onClick={() => { setPhase("checking"); setErrorMsg(""); }}
+          style={{
+            marginTop: "8px", padding: "6px 16px", background: "#333",
+            color: "#fff", border: "1px solid #666", borderRadius: "4px", cursor: "pointer",
+          }}
+        >
+          Retry
+        </button>
+      </div>
     );
   }
 
   if (phase === "authoring" || phase === "checking" || !compiledComponent) {
-    return (fallback || React.createElement("div", {
-      style: {
+    return fallback || (
+      <div style={{
         padding: "40px", textAlign: "center", color: "#888",
         fontFamily: "system-ui", fontSize: "14px",
-      }
-    },
-      React.createElement("div", {
-        style: {
+      }}>
+        <div style={{
           display: "inline-block", width: "20px", height: "20px",
           border: "2px solid #444", borderTopColor: "#888",
           borderRadius: "50%", animation: "spin 0.8s linear infinite",
-        }
-      }),
-      React.createElement("div", { style: { marginTop: "12px" } },
-        phase === "authoring" ? "Authoring " + id + "..." : "Loading..."
-      ),
-      React.createElement("style", {},
-        "@keyframes spin { to { transform: rotate(360deg); } }"
-      ),
-    ));
+        }} />
+        <div style={{ marginTop: "12px" }}>
+          {phase === "authoring" ? "Authoring " + id + "..." : "Loading..."}
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
   }
 
   // Render the authored component wrapped in ToolContext
-  return React.createElement(ComponentErrorBoundary, {
-    componentId: id,
-    onCrash: handleCrash,
-  },
-    React.createElement(ToolContext.Provider, { value: toolCtxValue },
-      React.createElement(compiledComponent, {
-        inputs,
-        handlers: handlerFns,
-      }),
-    ),
+  const Compiled = compiledComponent;
+  return (
+    <ComponentErrorBoundary componentId={id} onCrash={handleCrash}>
+      <ToolContext.Provider value={toolCtxValue}>
+        <Compiled inputs={inputs} handlers={handlerFns} />
+      </ToolContext.Provider>
+    </ComponentErrorBoundary>
   );
 }
