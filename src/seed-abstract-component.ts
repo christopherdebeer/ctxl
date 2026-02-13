@@ -11,22 +11,62 @@
 
 export const SEED_ABSTRACT_COMPONENT_SOURCE = `import React, { useState, useEffect, useRef, useCallback, Component } from "react";
 
+// ---- Mutation History ----
+
+interface MutationEntry {
+  id: string;
+  timestamp: number;
+  componentId: string;
+  trigger: string;
+  previousSource: string;
+  newSource: string;
+  outcome: "swap" | "remount" | "crash-recovery" | "rollback";
+}
+
+function getMutationHistory(): MutationEntry[] {
+  const w = window as any;
+  if (!w.__MUTATIONS__) w.__MUTATIONS__ = [];
+  return w.__MUTATIONS__;
+}
+
+function recordMutation(entry: Omit<MutationEntry, "id" | "timestamp">): void {
+  const history = getMutationHistory();
+  history.push({
+    ...entry,
+    id: Math.random().toString(36).slice(2, 10),
+    timestamp: Date.now(),
+  });
+  // Keep at most 50 entries to avoid unbounded growth
+  if (history.length > 50) history.splice(0, history.length - 50);
+}
+
+function getPreviousSource(componentId: string): string | null {
+  const history = getMutationHistory();
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].componentId === componentId && history[i].previousSource) {
+      return history[i].previousSource;
+    }
+  }
+  return null;
+}
+
 // ---- Error Boundary ----
 
 interface EBProps {
   componentId: string;
   children: React.ReactNode;
-  onCrash: (error: Error) => void;
+  onCrash: (error: Error, crashCount: number) => void;
 }
 
 interface EBState {
   hasError: boolean;
   error: Error | null;
   crashCount: number;
+  rollingBack: boolean;
 }
 
 class ComponentErrorBoundary extends Component<EBProps, EBState> {
-  state: EBState = { hasError: false, error: null, crashCount: 0 };
+  state: EBState = { hasError: false, error: null, crashCount: 0, rollingBack: false };
 
   static getDerivedStateFromError(error: Error): Partial<EBState> {
     return { hasError: true, error };
@@ -36,7 +76,7 @@ class ComponentErrorBoundary extends Component<EBProps, EBState> {
     const next = this.state.crashCount + 1;
     this.setState({ crashCount: next });
     console.error("[AC:" + this.props.componentId + "] Crash #" + next, error);
-    this.props.onCrash(error);
+    this.props.onCrash(error, next);
   }
 
   reset = () => {
@@ -59,6 +99,11 @@ class ComponentErrorBoundary extends Component<EBProps, EBState> {
         React.createElement("pre", { style: { whiteSpace: "pre-wrap", color: "#faa", margin: "8px 0" } },
           error?.message || "Unknown error"
         ),
+        crashCount >= 3
+          ? React.createElement("div", { style: { color: "#fa0", marginBottom: "8px" } },
+              "Multiple crashes detected. Attempting rollback to last known-good source..."
+            )
+          : null,
         React.createElement("button", {
           onClick: this.reset,
           style: {
@@ -142,10 +187,11 @@ export function AbstractComponent({
     (async () => {
       try {
         const vfsPath = "/src/ac/" + id + ".tsx";
-        const existingSource = shapeChanged ? runtime.files.get(vfsPath) : undefined;
+        const existingSource = runtime.files.get(vfsPath) || "";
+        const isReauthor = shapeChanged && !!existingSource;
 
         // Call LLM to author the component
-        const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, existingSource);
+        const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, isReauthor ? existingSource : undefined);
         const messages = [{ role: "user", content: "Author this component." }];
         const response = await runtime.callLLM(system, messages);
 
@@ -176,6 +222,15 @@ export function AbstractComponent({
           return;
         }
 
+        // Record mutation history (before overwriting)
+        recordMutation({
+          componentId: id,
+          trigger: isReauthor ? "re-author:shape-change" : "author:first-mount",
+          previousSource: existingSource,
+          newSource: source,
+          outcome: "swap",
+        });
+
         // Write to VFS and rebuild
         runtime.files.set(vfsPath, source);
         await runtime.idb.put(vfsPath, source);
@@ -197,22 +252,67 @@ export function AbstractComponent({
     })();
   }, [id, CompiledComponent, shapeChanged, currentInputShape, currentToolShape]);
 
-  // Error boundary crash handler
-  const handleCrash = useCallback((error: Error) => {
+  // Error boundary crash handler with rollback on repeated crashes
+  const handleCrash = useCallback((error: Error, crashCount: number) => {
     console.error("[AC:" + id + "] Component crashed:", error.message);
-    // Future: rollback from mutation history
+
+    // After 3 consecutive crashes, attempt rollback to previous source
+    if (crashCount >= 3) {
+      const prev = getPreviousSource(id);
+      if (prev) {
+        const runtime = (window as any).__RUNTIME__;
+        if (runtime) {
+          const vfsPath = "/src/ac/" + id + ".tsx";
+          const currentSource = runtime.files.get(vfsPath) || "";
+
+          console.warn("[AC:" + id + "] Rolling back to previous source after " + crashCount + " crashes");
+
+          recordMutation({
+            componentId: id,
+            trigger: "rollback:crash-count-" + crashCount,
+            previousSource: currentSource,
+            newSource: prev,
+            outcome: "rollback",
+          });
+
+          runtime.files.set(vfsPath, prev);
+          runtime.idb.put(vfsPath, prev).catch(() => {});
+          runtime.regenerateRegistry();
+          runtime.buildAndRun("rollback:" + id).catch((e: any) => {
+            console.error("[AC:" + id + "] Rollback build failed:", e);
+          });
+        }
+      } else {
+        console.warn("[AC:" + id + "] No previous source available for rollback");
+      }
+    }
   }, [id]);
 
   // Handle tool calls including __reshape
   const handleToolCall = useCallback((name: string, args: any) => {
     if (name === "__reshape") {
+      // Record the reshape trigger before re-authoring
+      const runtime = (window as any).__RUNTIME__;
+      if (runtime) {
+        const vfsPath = "/src/ac/" + id + ".tsx";
+        const currentSource = runtime.files.get(vfsPath) || "";
+        if (currentSource) {
+          recordMutation({
+            componentId: id,
+            trigger: "reshape:" + (args?.reason || "self-requested"),
+            previousSource: currentSource,
+            newSource: "", // will be filled by re-authoring
+            outcome: "swap",
+          });
+        }
+      }
       // Trigger re-authoring
       shapeRef.current = { inputs: "", tools: "" }; // force shape mismatch
       setPhase("checking"); // will trigger re-author effect
       return;
     }
     if (onToolCall) onToolCall(name, args);
-  }, [onToolCall]);
+  }, [id, onToolCall]);
 
   // Render states
   if (phase === "error") {

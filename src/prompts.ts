@@ -194,7 +194,8 @@ ${existingSource}
 Preserve working functionality. Adapt to the new interface.`
     : "";
 
-  return `You are authoring a React component. Return ONLY complete source code. NO markdown fences. NO explanation.
+  return `You are authoring a React component. Return ONLY the complete TypeScript/JSX source code.
+CRITICAL: Do NOT wrap your response in markdown fences (\`\`\`). Return raw source code starting with import statements.
 
 COMPONENT ID: ${componentId}
 VFS PATH: /src/ac/${componentId}.tsx
@@ -218,17 +219,23 @@ AVAILABLE IMPORTS:
 - { useAtom } from "../ctxl/hooks" — subscribe to shared state atoms
 - { AbstractComponent } from "../ctxl/abstract-component" — render child abstract components
 
-USING useReasoning:
-  const result = useReasoning(prompt, deps, { tools, onToolCall });
-  // Fires when deps change. Returns { content?, structured?, toolCalls? }.
-  // The hook calls onToolCall for you when the LLM invokes a tool.
-  // Use the deps array to control when reasoning fires (like useEffect).
+USING useReasoning (delta-driven perception):
+  // Pass the same tools and onToolCall from your props so reasoning can invoke tools:
+  const result = useReasoning(
+    "Describe what to reason about when deps change",
+    [dep1, dep2],   // fires only when these change (like useEffect)
+    { tools, onToolCall, componentId: "${componentId}" }
+  );
+  // result is null until first reasoning completes, then { content?, structured?, toolCalls? }
+  // The hook automatically dispatches tool calls via onToolCall.
+  // Use a function prompt for access to previous values:
+  //   useReasoning((prev, next) => \`Data changed from \${prev[0]} to \${next[0]}\`, [data], opts)
 
-USING AbstractComponent (for composition):
+USING AbstractComponent (for composition / self-decomposition):
   <AbstractComponent
     id="child-id"
     inputs={{ data: someData }}
-    tools={[{ name: "report", description: "Send data to parent" }]}
+    tools={[{ name: "report", description: "Send data to parent", schema: { message: "string" } }]}
     fallback={<div>Loading...</div>}
     onToolCall={(name, args) => { /* handle child tool calls */ }}
   />
@@ -237,10 +244,11 @@ RULES:
 - Export your component as the default export with a PascalCase name
 - Destructure inputs from props.inputs, not from props directly
 - Use useState for local UI state, useAtom for shared persistent state
-- Use useReasoning for LLM-driven perception (fires on input changes)
-- Use onToolCall to invoke tools and communicate with parent
-- Be visually polished. Use styled-components.
-- Include appropriate loading and error states
+- Use useReasoning when the component should reason about input changes (not every component needs it)
+- Use onToolCall to invoke parent-defined tools; the "report" tool is the canonical upward channel
+- Be visually polished. Use styled-components for styling.
+- Handle the case where useReasoning result is null (initial render before reasoning completes)
+- Keep the component focused — do one thing well
 
 ${guidelines ? `GUIDELINES:\n${guidelines}\n` : ""}${reauthorBlock}`;
 }
