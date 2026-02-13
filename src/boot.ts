@@ -40,9 +40,13 @@ const settingsStatus = document.getElementById("settingsStatus")!;
 
 const viewTabs = document.querySelectorAll<HTMLElement>(".viewTab");
 const rootEl = document.getElementById("root")!;
-const inspectEl = document.getElementById("inspect")!;
 const aboutEl = document.getElementById("about")!;
 const aboutBody = aboutEl.querySelector(".markdown-body") as HTMLElement;
+
+const closeDrawerBtn = document.getElementById("closeDrawerBtn")!;
+const drawerTabs = document.querySelectorAll<HTMLElement>(".drawerTab");
+const drawerInspectEl = document.getElementById("drawerInspect")!;
+const drawerContentEl = document.getElementById("drawerContent")!;
 
 // ============================================================
 // State
@@ -61,6 +65,7 @@ function toggleDrawer() { leftDrawer.classList.contains("open") ? closeDrawer() 
 
 devToggle.onclick = toggleDrawer;
 drawerBackdrop.onclick = closeDrawer;
+closeDrawerBtn.onclick = closeDrawer;
 
 // ============================================================
 // Status helpers
@@ -241,24 +246,43 @@ function renderInspectPanel() {
   }
   html += `</div>`;
 
-  inspectEl.innerHTML = html;
+  drawerInspectEl.innerHTML = html;
 }
+
+// ---- Drawer internal tabs (Code | Inspect) ----
+
+let activeDrawerTab = "code";
+
+function setDrawerTab(tab: string) {
+  activeDrawerTab = tab;
+  drawerTabs.forEach(t => t.classList.toggle("active", t.dataset.drawer === tab));
+
+  // Toggle content visibility
+  editorEl.style.display = tab === "code" ? "" : "none";
+  drawerInspectEl.classList.toggle("active", tab === "inspect");
+
+  // Show/hide files bar (only relevant for code tab)
+  filesEl.style.display = tab === "code" ? "" : "none";
+
+  // Auto-refresh inspect while visible
+  if (inspectInterval) { clearInterval(inspectInterval); inspectInterval = null; }
+  if (tab === "inspect") {
+    renderInspectPanel();
+    inspectInterval = setInterval(renderInspectPanel, 2000);
+  }
+}
+
+drawerTabs.forEach(tab => { tab.onclick = () => setDrawerTab(tab.dataset.drawer!); });
+
+// ---- Preview view switching (Component | About) ----
 
 function setView(view: string) {
   viewTabs.forEach(tab => tab.classList.toggle("active", tab.dataset.view === view));
 
   rootEl.classList.toggle("hidden", view !== "component");
-  inspectEl.classList.toggle("active", view === "inspect");
   aboutEl.classList.toggle("active", view === "about");
 
   if (view === "about") loadAboutContent();
-
-  // Auto-refresh inspect panel while visible
-  if (inspectInterval) { clearInterval(inspectInterval); inspectInterval = null; }
-  if (view === "inspect") {
-    renderInspectPanel();
-    inspectInterval = setInterval(renderInspectPanel, 2000);
-  }
 }
 
 viewTabs.forEach(tab => { tab.onclick = () => setView(tab.dataset.view!); });

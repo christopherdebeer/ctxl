@@ -35,7 +35,7 @@
         background: #fff;
         box-shadow: 2px 0 10px rgba(0,0,0,0.1);
         display: grid;
-        grid-template-rows: auto auto 1fr auto;
+        grid-template-rows: auto auto auto 1fr auto;
       }
       #left.open { transform: translateX(0); }
 
@@ -50,8 +50,41 @@
       #drawerBackdrop.visible { display: block; }
 
       #toolbar { display: flex; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+      #closeDrawerBtn {
+        margin-left: auto;
+        background: none; border: none; cursor: pointer;
+        font-size: 18px; color: #999; padding: 4px 8px; border-radius: 4px;
+        line-height: 1;
+      }
+      #closeDrawerBtn:hover { background: #f0f0f0; color: #333; }
+
+      /* Drawer internal tabs (Code | Inspect) */
+      #drawerTabs {
+        display: flex; gap: 0; padding: 0 10px;
+        border-bottom: 1px solid #eee; background: #fafafa;
+      }
+      .drawerTab {
+        padding: 8px 16px; border: none; background: none;
+        cursor: pointer; font-size: 13px; font-weight: 500;
+        color: #888; border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .drawerTab:hover { color: #333; }
+      .drawerTab.active { color: #333; border-bottom-color: #667eea; }
+
       #status { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 12px; border-bottom: 1px solid #eee; white-space: pre-wrap; }
+
+      /* Drawer content area — editor and inspect share the slot */
+      #drawerContent { position: relative; overflow: hidden; }
       #editor { width: 100%; height: 100%; overflow: hidden; box-sizing: border-box; }
+      #drawerInspect {
+        display: none;
+        position: absolute; inset: 0;
+        overflow-y: auto; padding: 16px; box-sizing: border-box;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px; color: #333; background: #fff;
+      }
+      #drawerInspect.active { display: block; }
       #files { padding: 8px 10px; border-top: 1px solid #eee; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       #files button { font-family: ui-monospace, monospace; font-size: 12px; padding: 6px 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; border-radius: 6px; }
       #files button[data-active="true"] { border-color: #000; }
@@ -91,38 +124,27 @@
       #about.active { display: block; }
       #root.hidden { display: none; }
 
-      /* Inspect view */
-      #inspect {
-        display: none;
-        height: 100%;
-        overflow-y: auto;
-        padding: 16px;
-        box-sizing: border-box;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
-        color: #333;
-      }
-      #inspect.active { display: block; }
-      #inspect .section { margin-bottom: 20px; }
-      #inspect .section-title {
+      /* Inspect view (inside drawer) */
+      #drawerInspect .section { margin-bottom: 20px; }
+      #drawerInspect .section-title {
         font-weight: 600; font-size: 13px; color: #555; text-transform: uppercase;
         letter-spacing: 0.05em; margin-bottom: 8px; padding-bottom: 4px;
         border-bottom: 1px solid #eee;
       }
-      #inspect .entry {
+      #drawerInspect .entry {
         padding: 6px 8px; margin-bottom: 2px; border-radius: 4px; background: #f8f8f8;
         display: flex; gap: 8px; align-items: baseline;
       }
-      #inspect .entry-key { font-weight: 600; color: #667eea; min-width: 100px; }
-      #inspect .entry-val { color: #666; word-break: break-all; }
-      #inspect .mutation {
+      #drawerInspect .entry-key { font-weight: 600; color: #667eea; min-width: 100px; }
+      #drawerInspect .entry-val { color: #666; word-break: break-all; }
+      #drawerInspect .mutation {
         padding: 8px; margin-bottom: 4px; border-radius: 4px;
         border-left: 3px solid #667eea; background: #f8f8fa;
       }
-      #inspect .mutation.rollback { border-left-color: #c00; }
-      #inspect .mutation .trigger { font-weight: 500; color: #333; }
-      #inspect .mutation .meta { font-size: 11px; color: #999; margin-top: 2px; }
-      #inspect .empty { color: #aaa; font-style: italic; }
+      #drawerInspect .mutation.rollback { border-left-color: #c00; }
+      #drawerInspect .mutation .trigger { font-weight: 500; color: #333; }
+      #drawerInspect .mutation .meta { font-size: 11px; color: #999; margin-top: 2px; }
+      #drawerInspect .empty { color: #aaa; font-style: italic; }
 
       /* Markdown styling */
       #about .markdown-body {
@@ -192,6 +214,8 @@
         #left { width: 100vw; }
         #toolbar { flex-wrap: wrap; }
         #toolbar button { min-height: 44px; min-width: 44px; padding: 10px 16px; }
+        #closeDrawerBtn { min-height: 44px; min-width: 44px; font-size: 22px; }
+        .drawerTab { min-height: 44px; padding: 10px 16px; }
         #files { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
         #files button { min-height: 44px; flex-shrink: 0; }
         #editor { min-height: 200px; overflow: hidden; }
@@ -220,6 +244,11 @@
           <button id="resetBtn">Reset</button>
           <button id="settingsBtn">API</button>
           <span style="opacity:.7;font-size:12px">Ctrl/Cmd+S builds</span>
+          <button id="closeDrawerBtn" aria-label="Close drawer">&times;</button>
+        </div>
+        <div id="drawerTabs">
+          <button class="drawerTab active" data-drawer="code">Code</button>
+          <button class="drawerTab" data-drawer="inspect">Inspect</button>
         </div>
         <div id="settings" style="display:none; padding:10px; border-bottom:1px solid #eee; background:#f9f9f9;">
           <div style="margin-bottom:8px;">
@@ -256,7 +285,10 @@
           <span id="settingsStatus" style="margin-left:8px; font-size:12px; color:#666;"></span>
         </div>
         <div id="status"></div>
-        <div id="editor"></div>
+        <div id="drawerContent">
+          <div id="editor"></div>
+          <div id="drawerInspect"></div>
+        </div>
         <div id="files"></div>
       </div>
 
@@ -266,7 +298,6 @@
           <button id="devToggle">Dev<span class="indicator"></span></button>
           <div class="viewTabs">
             <button class="viewTab active" data-view="component">Component</button>
-            <button class="viewTab" data-view="inspect">Inspect</button>
             <button class="viewTab" data-view="about">About</button>
           </div>
           <span class="pill" id="refreshPill">React Refresh loading…</span>
@@ -274,7 +305,6 @@
         </div>
         <div id="preview">
           <div id="root"></div>
-          <div id="inspect"></div>
           <div id="about"><div class="markdown-body"></div></div>
         </div>
       </div>
