@@ -7,11 +7,9 @@
 
 import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
 import { createIDB } from "./idb";
-import { createStateStore } from "./state";
 import { createAtomRegistry } from "./atoms";
 import { createRuntime } from "./runtime";
-import { DEFAULT_SEEDS } from "./seeds";
-import { V2_SEEDS } from "./seeds-v2";
+import { SEEDS } from "./seeds-v2";
 import type { Runtime, IDB } from "./types";
 
 // ============================================================
@@ -220,35 +218,24 @@ const defaultProxyUrl = (location.hostname === "localhost" || location.hostname 
 // 1. IndexedDB
 idb = createIDB();
 
-// 2. State store (v1) + Atom registry (v2)
-const stateStore = createStateStore();
-window.__AGENT_STATE__ = stateStore;
-
+// 2. Atom registry (persistent shared state)
 const atomRegistry = createAtomRegistry();
 await atomRegistry.hydrate(idb);
 (window as any).__ATOMS__ = atomRegistry;
 
-// 3. Determine seed mode: v2 if URL has ?v2, or if VFS has v2 files
-const urlParams = new URLSearchParams(location.search);
-const forceV2 = urlParams.has("v2");
-
-// 4. Load or seed VFS
+// 3. Load or seed VFS
 files = new Map<string, string>();
 const rows = await idb.getAll();
 const vfsRows = rows.filter(r => !r.path.startsWith("__atom:"));
 
 if (vfsRows.length === 0) {
-  const seeds = forceV2 ? V2_SEEDS : DEFAULT_SEEDS;
-  for (const [p, t] of seeds.entries()) {
+  for (const [p, t] of SEEDS.entries()) {
     files.set(p, t);
     await idb.put(p, t);
   }
 } else {
   for (const r of vfsRows) files.set(r.path, r.text);
 }
-
-// Detect v2 mode from VFS content
-const isV2 = files.has("/src/ctxl/hooks.ts") || files.has("/src/ctxl/abstract-component.tsx");
 
 renderFileButtons();
 editorEl.value = files.get(activePath) ?? "";
@@ -265,7 +252,6 @@ const config = {
 runtime = createRuntime({
   esbuild,
   idb,
-  stateStore,
   files,
   config,
   callbacks: {
@@ -273,16 +259,10 @@ runtime = createRuntime({
     onMode: setMode,
     onFileChange(path: string, text: string) {
       if (path === activePath) editorEl.value = text;
-      // Re-render file browser when new files appear (e.g., via compose)
       renderFileButtons();
     },
     onError(err: unknown) {
-      const error = err as Error;
-      stateStore.set({
-        _buildError: error.message || String(err),
-        _buildErrorStack: error.stack,
-        _buildErrorTime: Date.now(),
-      });
+      console.error("[ctxl] Build error:", err);
     },
   },
 });

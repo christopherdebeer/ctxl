@@ -1,9 +1,8 @@
-import type { Runtime, StateStore } from "./types";
+import type { Runtime } from "./types";
 
 declare global {
   interface Window {
     __RUNTIME__: Runtime;
-    __AGENT_STATE__: StateStore;
     ctxl: Record<string, unknown>;
     $RefreshReg$: (...args: any[]) => void;
     $RefreshSig$: (...args: any[]) => (type: any) => any;

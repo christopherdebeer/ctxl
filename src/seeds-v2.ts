@@ -1,5 +1,5 @@
 /**
- * v2 VFS seed files — AbstractComponent paradigm.
+ * VFS seed files — AbstractComponent paradigm.
  *
  * Seeds provide the infrastructure layer in the VFS:
  * - ctxl/hooks.ts (useReasoning, useAtom)
@@ -19,7 +19,7 @@ const SEED_REGISTRY_SOURCE = `// Auto-generated component registry.
 (window as any).__COMPONENTS__ ??= {};
 `;
 
-export const V2_SEEDS: Map<string, string> = new Map([
+export const SEEDS: Map<string, string> = new Map([
   ["/src/ctxl/hooks.ts", SEED_CTXL_HOOKS_SOURCE],
   ["/src/ctxl/abstract-component.tsx", SEED_ABSTRACT_COMPONENT_SOURCE],
   ["/src/ac/_registry.ts", SEED_REGISTRY_SOURCE],
