@@ -25,9 +25,10 @@ interface ReasoningResult {
 
 interface ReasoningOptions {
   tools?: ToolDef[];
-  onToolCall?: (name: string, args: any) => void;
+  onToolCall?: (name: string, args: any) => any;
   debounceMs?: number;
   componentId?: string;
+  maxTurns?: number;
 }
 
 // ---- Build system context from tools ----
@@ -69,7 +70,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string): string {
     }
   } catch {}
 
-  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + inspectionBlock + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } ONLY if you need capabilities your current source doesn't have (rare)\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
+  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + inspectionBlock + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
 }
 
 // ---- useReasoning ----
@@ -134,7 +135,7 @@ export function useReasoning(
           return;
         }
 
-        const { tools = [], onToolCall, componentId } = optionsRef.current;
+        const { tools = [], onToolCall, componentId, maxTurns = 3 } = optionsRef.current;
 
         // Build the reason_response tool for structured output
         const reasonTool = {
@@ -160,7 +161,7 @@ export function useReasoning(
               reshape: {
                 type: "object",
                 properties: { reason: { type: "string" } },
-                description: "Set only if self-modification is needed",
+                description: "Request self-modification when current source is insufficient",
               },
             },
           },
@@ -169,43 +170,91 @@ export function useReasoning(
         // Build system context from tools (self-contained, no window global needed)
         const system = buildSystemContext(tools, componentId);
 
-        const messages = [{ role: "user", content: resolvedPrompt }];
+        const conversationMessages: any[] = [{ role: "user", content: resolvedPrompt }];
         const extras = {
           tools: [reasonTool],
           tool_choice: { type: "tool", name: "reason_response" },
         };
 
-        // Use the host LLM transport
-        const response = await runtime.callLLM(system, messages, extras);
+        // Multi-turn agent loop: dispatch tools, feed results back, let agent continue
+        let latestResult: ReasoningResult | null = null;
 
-        if (!mountedRef.current) return;
+        for (let turn = 0; turn < maxTurns; turn++) {
+          const response = await runtime.callLLM(system, conversationMessages, extras);
 
-        if (response.error) {
-          setResult({ content: "Reasoning error: " + response.error });
-          return;
-        }
+          if (!mountedRef.current) return;
 
-        // Extract tool_use block
-        const data = response.data;
-        const toolBlock = data?.content?.find(
-          (b: any) => b.type === "tool_use" && b.name === "reason_response"
-        );
+          if (response.error) {
+            setResult({ content: "Reasoning error: " + response.error });
+            return;
+          }
 
-        if (toolBlock?.input) {
+          const data = response.data;
+          const toolBlock = data?.content?.find(
+            (b: any) => b.type === "tool_use" && b.name === "reason_response"
+          );
+
+          if (!toolBlock?.input) {
+            // Fallback: extract text
+            const text = data?.content?.find((b: any) => b.type === "text")?.text || "";
+            latestResult = { content: text };
+            break;
+          }
+
           const r: ReasoningResult = toolBlock.input;
-          setResult(r);
+          latestResult = r;
 
-          // Dispatch tool calls
-          if (r.toolCalls && onToolCall) {
-            for (const tc of r.toolCalls) {
-              onToolCall(tc.name, tc.args);
+          // Check for reshape (via reshape field OR __reshape in toolCalls)
+          const reshapeInToolCalls = r.toolCalls && r.toolCalls.some((tc: any) => tc.name === "__reshape");
+          const hasReshape = r.reshape || reshapeInToolCalls;
+
+          if (hasReshape) {
+            // Dispatch all tool calls including any __reshape, then stop
+            if (r.toolCalls && onToolCall) {
+              for (const tc of r.toolCalls) { onToolCall(tc.name, tc.args); }
+            }
+            // Auto-dispatch reshape field if __reshape wasn't already in toolCalls
+            if (r.reshape && onToolCall && !reshapeInToolCalls) {
+              onToolCall("__reshape", r.reshape);
+            }
+            break;
+          }
+
+          // If no tool calls or no handler, we're done
+          if (!r.toolCalls || r.toolCalls.length === 0 || !onToolCall) break;
+
+          // Last allowed turn — dispatch tool calls but don't loop back
+          if (turn >= maxTurns - 1) {
+            for (const tc of r.toolCalls) { onToolCall(tc.name, tc.args); }
+            break;
+          }
+
+          // Dispatch tool calls and collect results for follow-up
+          const toolResults: string[] = [];
+          for (const tc of r.toolCalls) {
+            try {
+              const res = await Promise.resolve(onToolCall(tc.name, tc.args));
+              toolResults.push(tc.name + ": " + (res !== undefined ? (typeof res === "string" ? res : JSON.stringify(res)) : "done"));
+            } catch (e: any) {
+              toolResults.push(tc.name + ": error — " + (e.message || String(e)));
             }
           }
-        } else {
-          // Fallback: extract text
-          const text = data?.content?.find((b: any) => b.type === "text")?.text || "";
-          setResult({ content: text });
+
+          // Feed tool results back to LLM for next turn
+          conversationMessages.push({ role: "assistant", content: data.content });
+          conversationMessages.push({
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolBlock.id,
+                content: "Tool results:\\n" + toolResults.join("\\n") + "\\n\\nContinue reasoning. If further action is needed, invoke more tools or request reshape. Otherwise return your assessment.",
+              },
+            ],
+          });
         }
+
+        if (latestResult) setResult(latestResult);
       } catch (err: any) {
         if (mountedRef.current) {
           setResult({ content: "Reasoning error: " + (err.message || String(err)) });
