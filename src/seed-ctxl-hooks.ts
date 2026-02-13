@@ -6,7 +6,7 @@
  * useAtom subscribes to shared persistent state atoms.
  */
 
-export const SEED_CTXL_HOOKS_SOURCE = `import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
+export const SEED_CTXL_HOOKS_SOURCE = `import { useState, useEffect, useRef, useCallback, useSyncExternalStore, createContext, useContext } from "react";
 
 // ---- Types ----
 
@@ -14,6 +14,7 @@ interface ToolDef {
   name: string;
   description: string;
   schema?: Record<string, string>;
+  handler?: (args: any) => any;
 }
 
 interface ReasoningResult {
@@ -30,6 +31,20 @@ interface ReasoningOptions {
   componentId?: string;
   maxTurns?: number;
 }
+
+// ---- Tool Context ----
+// Parent-provided tools are injected via React Context by AbstractComponent.
+// useReasoning reads from this context automatically — child components
+// never need to thread tools/onToolCall through props.
+
+interface ToolContextValue {
+  tools: ToolDef[];
+  dispatch: (name: string, args: any) => any;
+  reshape: (reason: string) => void;
+  componentId: string;
+}
+
+export const ToolContext = createContext<ToolContextValue | null>(null);
 
 // ---- Build system context from tools ----
 
@@ -96,6 +111,11 @@ export function useReasoning(
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
+  // Parent tool context (provided by AbstractComponent)
+  const parentCtx = useContext(ToolContext);
+  const parentCtxRef = useRef(parentCtx);
+  parentCtxRef.current = parentCtx;
+
   // Stable reference to options
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -135,7 +155,37 @@ export function useReasoning(
           return;
         }
 
-        const { tools = [], onToolCall, componentId, maxTurns = 3 } = optionsRef.current;
+        const { tools: localTools = [], onToolCall: localOnToolCall, componentId: optComponentId, maxTurns = 3 } = optionsRef.current;
+
+        // Merge parent tools (from context) with component-local tools
+        const ctx = parentCtxRef.current;
+        const parentTools = ctx?.tools ?? [];
+        const allTools = [...parentTools, ...localTools];
+        const componentId = optComponentId || ctx?.componentId;
+
+        // Unified dispatch: routes to parent handler, local handler, or local onToolCall
+        const dispatchTool = (name: string, args: any): any => {
+          // __reshape always goes to context
+          if (name === "__reshape") {
+            if (ctx?.reshape) { ctx.reshape(args?.reason || "self-requested"); return "reshape triggered"; }
+            return undefined;
+          }
+          // Parent tool — dispatch via context
+          if (ctx && parentTools.some((t: any) => t.name === name)) {
+            return ctx.dispatch(name, args);
+          }
+          // Local tool with inline handler
+          const localTool = localTools.find((t: any) => t.name === name);
+          if (localTool && typeof localTool.handler === "function") {
+            return localTool.handler(args);
+          }
+          // Fallback to onToolCall
+          if (localOnToolCall) {
+            return localOnToolCall(name, args);
+          }
+          console.warn("[useReasoning] No handler for tool: " + name);
+          return undefined;
+        };
 
         // Build the reason_response tool for structured output
         const reasonTool = {
@@ -167,8 +217,8 @@ export function useReasoning(
           },
         };
 
-        // Build system context from tools (self-contained, no window global needed)
-        const system = buildSystemContext(tools, componentId);
+        // Build system context from merged tools
+        const system = buildSystemContext(allTools, componentId);
 
         const conversationMessages: any[] = [{ role: "user", content: resolvedPrompt }];
         const extras = {
@@ -210,22 +260,22 @@ export function useReasoning(
 
           if (hasReshape) {
             // Dispatch all tool calls including any __reshape, then stop
-            if (r.toolCalls && onToolCall) {
-              for (const tc of r.toolCalls) { onToolCall(tc.name, tc.args); }
+            if (r.toolCalls) {
+              for (const tc of r.toolCalls) { dispatchTool(tc.name, tc.args); }
             }
             // Auto-dispatch reshape field if __reshape wasn't already in toolCalls
-            if (r.reshape && onToolCall && !reshapeInToolCalls) {
-              onToolCall("__reshape", r.reshape);
+            if (r.reshape && !reshapeInToolCalls) {
+              dispatchTool("__reshape", r.reshape);
             }
             break;
           }
 
-          // If no tool calls or no handler, we're done
-          if (!r.toolCalls || r.toolCalls.length === 0 || !onToolCall) break;
+          // If no tool calls, we're done
+          if (!r.toolCalls || r.toolCalls.length === 0) break;
 
           // Last allowed turn — dispatch tool calls but don't loop back
           if (turn >= maxTurns - 1) {
-            for (const tc of r.toolCalls) { onToolCall(tc.name, tc.args); }
+            for (const tc of r.toolCalls) { dispatchTool(tc.name, tc.args); }
             break;
           }
 
@@ -233,7 +283,7 @@ export function useReasoning(
           const toolResults: string[] = [];
           for (const tc of r.toolCalls) {
             try {
-              const res = await Promise.resolve(onToolCall(tc.name, tc.args));
+              const res = await Promise.resolve(dispatchTool(tc.name, tc.args));
               toolResults.push(tc.name + ": " + (res !== undefined ? (typeof res === "string" ? res : JSON.stringify(res)) : "done"));
             } catch (e: any) {
               toolResults.push(tc.name + ": error — " + (e.message || String(e)));

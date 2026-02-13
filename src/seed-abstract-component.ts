@@ -9,7 +9,8 @@
  * - Rendering the authored component with inputs/tools
  */
 
-export const SEED_ABSTRACT_COMPONENT_SOURCE = `import React, { useState, useEffect, useRef, useCallback, Component } from "react";
+export const SEED_ABSTRACT_COMPONENT_SOURCE = `import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
+import { ToolContext } from "./hooks";
 
 // ---- Mutation History ----
 
@@ -147,6 +148,11 @@ function getToolShape(tools: any[] | undefined): string {
   }).sort().join(",");
 }
 
+function getHandlerShape(handlers: Record<string, any> | undefined): string {
+  if (!handlers) return "";
+  return Object.keys(handlers).sort().join(",");
+}
+
 // ---- Freshness tracking ----
 // Tracks reshape requests per component to detect stale authoring.
 
@@ -170,21 +176,21 @@ export function AbstractComponent({
   id,
   inputs = {},
   tools = [],
+  handlers = {},
   guidelines,
   fallback,
-  onToolCall,
 }: {
   id: string;
   inputs?: Record<string, any>;
-  tools?: Array<{ name: string; description: string; schema?: Record<string, string> }>;
+  tools?: Array<{ name: string; description: string; schema?: Record<string, string>; handler: (args: any) => any }>;
+  handlers?: Record<string, { description: string; fn: (...args: any[]) => any }>;
   guidelines?: string;
   fallback?: React.ReactNode;
-  onToolCall?: (name: string, args: any) => void;
 }) {
   const [phase, setPhase] = useState<"checking" | "authoring" | "ready" | "error">("checking");
   const [errorMsg, setErrorMsg] = useState("");
   const authoringRef = useRef(false);
-  const shapeRef = useRef({ inputs: getShape(inputs), tools: getToolShape(tools) });
+  const shapeRef = useRef({ inputs: getShape(inputs), tools: getToolShape(tools), handlers: getHandlerShape(handlers) });
 
   // Get the compiled component from the registry
   const registry = (window as any).__COMPONENTS__ || {};
@@ -193,17 +199,82 @@ export function AbstractComponent({
   // Check if shape changed (triggers re-authoring)
   const currentInputShape = getShape(inputs);
   const currentToolShape = getToolShape(tools);
+  const currentHandlerShape = getHandlerShape(handlers);
   const shapeChanged =
     phase === "ready" &&
-    (currentInputShape !== shapeRef.current.inputs || currentToolShape !== shapeRef.current.tools);
+    (currentInputShape !== shapeRef.current.inputs ||
+     currentToolShape !== shapeRef.current.tools ||
+     currentHandlerShape !== shapeRef.current.handlers);
 
-  // Author or re-author when needed
+  // ---- Tool Context: parent tools injected into useReasoning via context ----
+
+  // Strip handlers to get tool definitions for the LLM prompt
+  const toolDefsKey = getToolShape(tools);
+  const toolDefs = useMemo(() =>
+    tools.map(t => ({ name: t.name, description: t.description, schema: t.schema })),
+    [toolDefsKey]
+  );
+
+  // Stable dispatch via ref so context value doesn't churn
+  const toolsRef = useRef(tools);
+  toolsRef.current = tools;
+
+  const dispatch = useCallback((name: string, args: any): any => {
+    const tool = toolsRef.current.find(t => t.name === name);
+    if (tool?.handler) return tool.handler(args);
+    console.warn("[AC:" + id + "] No handler for tool: " + name);
+    return undefined;
+  }, [id]);
+
+  const reshape = useCallback((reason: string) => {
+    trackReshape(id);
+    const runtime = (window as any).__RUNTIME__;
+    if (runtime) {
+      const vfsPath = "/src/ac/" + id + ".tsx";
+      const currentSource = runtime.files.get(vfsPath) || "";
+      if (currentSource) {
+        recordMutation({
+          componentId: id,
+          trigger: "reshape:" + reason,
+          previousSource: currentSource,
+          newSource: "",
+          outcome: "swap",
+        });
+      }
+    }
+    shapeRef.current = { inputs: "", tools: "", handlers: "" };
+    setPhase("checking");
+  }, [id]);
+
+  const toolCtxValue = useMemo(() => ({
+    tools: toolDefs,
+    dispatch,
+    reshape,
+    componentId: id,
+  }), [toolDefs, dispatch, reshape, id]);
+
+  // ---- Strip handler descriptions for child (just the functions) ----
+
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
+
+  const handlerFns = useMemo(() => {
+    const result: Record<string, (...args: any[]) => any> = {};
+    for (const k of Object.keys(handlers)) {
+      // Stable wrappers that read from ref
+      result[k] = (...args: any[]) => handlersRef.current[k]?.fn(...args);
+    }
+    return result;
+  }, [getHandlerShape(handlers)]);
+
+  // ---- Author or re-author when needed ----
+
   useEffect(() => {
     if (authoringRef.current) return;
 
     // Already have the component and shape hasn't changed
     if (compiledComponent && !shapeChanged) {
-      shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
+      shapeRef.current = { inputs: currentInputShape, tools: currentToolShape, handlers: currentHandlerShape };
       setPhase("ready");
       return;
     }
@@ -220,15 +291,20 @@ export function AbstractComponent({
     setPhase("authoring");
 
     // LLM calls can run in parallel, but buildAndRun must be serialised.
-    // Split authoring into: (1) LLM call, (2) queued VFS write + rebuild.
     (async () => {
       try {
         const vfsPath = "/src/ac/" + id + ".tsx";
         const existingSource = runtime.files.get(vfsPath) || "";
         const isReauthor = shapeChanged && !!existingSource;
 
+        // Build handler descriptions for the authoring prompt
+        const handlerDescs: Record<string, string> = {};
+        for (const [k, v] of Object.entries(handlers)) {
+          handlerDescs[k] = v.description;
+        }
+
         // Call LLM to author the component via write_component tool
-        const system = runtime.buildAuthoringPrompt(id, inputs, tools, guidelines, isReauthor ? existingSource : undefined);
+        const system = runtime.buildAuthoringPrompt(id, inputs, toolDefs, handlerDescs, guidelines, isReauthor ? existingSource : undefined);
         const messages = [{ role: "user", content: "Author this component." }];
         const authorTool = {
           name: "write_component",
@@ -269,7 +345,6 @@ export function AbstractComponent({
 
         // Serialise VFS write + rebuild to prevent concurrent builds
         await enqueueAuthoring(async () => {
-          // Record mutation history (before overwriting)
           recordMutation({
             componentId: id,
             trigger: isReauthor ? "re-author:shape-change" : "author:first-mount",
@@ -278,18 +353,13 @@ export function AbstractComponent({
             outcome: "swap",
           });
 
-          // Write to VFS and rebuild
           runtime.files.set(vfsPath, source);
           await runtime.idb.put(vfsPath, source);
-
-          // Update the component registry file
           runtime.regenerateRegistry();
-
-          // Rebuild — after this, window.__COMPONENTS__[id] will exist
           await runtime.buildAndRun("author:" + id);
         });
 
-        shapeRef.current = { inputs: currentInputShape, tools: currentToolShape };
+        shapeRef.current = { inputs: currentInputShape, tools: currentToolShape, handlers: currentHandlerShape };
         resetReshapeCounter(id);
         setPhase("ready");
       } catch (err: any) {
@@ -299,13 +369,12 @@ export function AbstractComponent({
         authoringRef.current = false;
       }
     })();
-  }, [id, compiledComponent, shapeChanged, currentInputShape, currentToolShape]);
+  }, [id, compiledComponent, shapeChanged, currentInputShape, currentToolShape, currentHandlerShape]);
 
   // Error boundary crash handler with rollback on repeated crashes
   const handleCrash = useCallback((error: Error, crashCount: number) => {
     console.error("[AC:" + id + "] Component crashed:", error.message);
 
-    // After 3 consecutive crashes, attempt rollback to previous source
     if (crashCount >= 3) {
       const prev = getPreviousSource(id);
       if (prev) {
@@ -336,33 +405,6 @@ export function AbstractComponent({
       }
     }
   }, [id]);
-
-  // Handle tool calls including __reshape
-  const handleToolCall = useCallback((name: string, args: any) => {
-    if (name === "__reshape") {
-      trackReshape(id);
-      // Record the reshape trigger before re-authoring
-      const runtime = (window as any).__RUNTIME__;
-      if (runtime) {
-        const vfsPath = "/src/ac/" + id + ".tsx";
-        const currentSource = runtime.files.get(vfsPath) || "";
-        if (currentSource) {
-          recordMutation({
-            componentId: id,
-            trigger: "reshape:" + (args?.reason || "self-requested"),
-            previousSource: currentSource,
-            newSource: "", // will be filled by re-authoring
-            outcome: "swap",
-          });
-        }
-      }
-      // Trigger re-authoring
-      shapeRef.current = { inputs: "", tools: "" }; // force shape mismatch
-      setPhase("checking"); // will trigger re-author effect
-      return;
-    }
-    if (onToolCall) onToolCall(name, args);
-  }, [id, onToolCall]);
 
   // Render states
   if (phase === "error") {
@@ -410,16 +452,17 @@ export function AbstractComponent({
     ));
   }
 
-  // Render the authored component
+  // Render the authored component wrapped in ToolContext
   return React.createElement(ComponentErrorBoundary, {
     componentId: id,
     onCrash: handleCrash,
   },
-    React.createElement(compiledComponent, {
-      inputs,
-      tools,
-      onToolCall: handleToolCall,
-    }),
+    React.createElement(ToolContext.Provider, { value: toolCtxValue },
+      React.createElement(compiledComponent, {
+        inputs,
+        handlers: handlerFns,
+      }),
+    ),
   );
 }
 `;
