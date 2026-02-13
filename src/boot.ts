@@ -1,15 +1,13 @@
 /**
  * boot.ts — Dev environment entry point for index.html
  *
- * Imports from the ctxl module system and wires everything
- * to the dev UI: file browser, editor, settings, keyboard shortcuts, drawer.
+ * Uses the same initSystem() code path as <CtxlProvider> so the dev
+ * environment dogfoods the identical boot sequence that library consumers get.
+ * The VFS main.tsx wraps its React tree in <RuntimeContext.Provider>,
+ * completing the dogfooding loop.
  */
 
-import * as esbuild from "https://unpkg.com/esbuild-wasm@0.24.2/esm/browser.min.js";
-import { createIDB } from "./idb";
-import { createAtomRegistry } from "./atoms";
-import { createRuntime } from "./runtime";
-import { SEEDS } from "./seeds-v2";
+import { initSystem } from "./init";
 import { createEditor, type EditorInstance } from "./editor";
 import type { Runtime, IDB } from "./types";
 
@@ -282,7 +280,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ============================================================
-// Boot sequence
+// Boot sequence — uses the same initSystem() as <CtxlProvider>
 // ============================================================
 
 const savedConfig = JSON.parse(localStorage.getItem("__RUNTIME_CONFIG__") || "{}");
@@ -290,51 +288,19 @@ const defaultProxyUrl = (location.hostname === "localhost" || location.hostname 
   ? "http://localhost:3001/api/chat"
   : "/api/chat";
 
-// 1. IndexedDB
-idb = createIDB();
+logStatus("Booting ctxl (shared initSystem path)...");
 
-// 2. Atom registry (persistent shared state)
-const atomRegistry = createAtomRegistry();
-await atomRegistry.hydrate(idb);
-(window as any).__ATOMS__ = atomRegistry;
-
-// 3. Load or seed VFS
-files = new Map<string, string>();
-const rows = await idb.getAll();
-const vfsRows = rows.filter(r => !r.path.startsWith("__atom:"));
-
-if (vfsRows.length === 0) {
-  for (const [p, t] of SEEDS.entries()) {
-    files.set(p, t);
-    await idb.put(p, t);
-  }
-} else {
-  for (const r of vfsRows) files.set(r.path, r.text);
-}
-
-// 3b. Mount CodeMirror 6 editor
+// Mount CodeMirror 6 editor (can happen before system init)
 editor = createEditor(editorEl, {
   onChange: updateUnsavedIndicator,
   onSave() { flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S").catch(() => {}); },
 });
 
-renderFileButtons();
-editor.setValue(files.get(activePath) ?? "");
-logStatus("Loaded VFS. Initial build pending...");
-
-// 4. Create runtime
-const config = {
+const system = await initSystem({
   apiMode: savedConfig.apiMode || "none",
   apiKey: savedConfig.apiKey || "",
   proxyUrl: savedConfig.proxyUrl || defaultProxyUrl,
   model: savedConfig.model || "claude-sonnet-4-5-20250929",
-};
-
-runtime = createRuntime({
-  esbuild,
-  idb,
-  files,
-  config,
   callbacks: {
     onStatus: logStatus,
     onMode: setMode,
@@ -347,11 +313,13 @@ runtime = createRuntime({
     },
   },
 });
-window.__RUNTIME__ = runtime;
 
-// 5. React Refresh
-const refreshOk = await runtime.initRefresh();
-if (refreshOk) {
+runtime = system.runtime;
+files = system.files;
+idb = system.idb;
+
+// React Refresh status
+if (runtime.RefreshRuntime) {
   refreshPill.textContent = "React Refresh active";
   refreshPill.classList.remove("warn");
 } else {
@@ -359,12 +327,13 @@ if (refreshOk) {
   refreshPill.classList.add("err");
 }
 
-// 6. esbuild
-await runtime.initEsbuild();
+// Render file browser with loaded VFS
+renderFileButtons();
+editor.setValue(files.get(activePath) ?? "");
 
-// 7. Wire up buttons
+// Wire up buttons
 runBtn.onclick = () => { flushEditorToVFS(); runtime.buildAndRun("button").catch(() => {}); };
 resetBtn.onclick = () => runtime.reset();
 
-// 8. First build
+// First build
 await runtime.buildAndRun("startup");

@@ -11,9 +11,9 @@
  * Registry:  src/seeds-v2.ts
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
 import type { ReactNode } from "react";
-import { ToolContext } from "./hooks";
+import { ToolContext, useRuntimeContext } from "./hooks";
 
 // ---- Mutation History ----
 
@@ -192,6 +192,8 @@ export function AbstractComponent({
   guidelines?: string;
   fallback?: ReactNode;
 }) {
+  const { runtime: ctxRuntime } = useRuntimeContext();
+
   const [phase, setPhase] = useState<"checking" | "authoring" | "ready" | "error">("checking");
   const [errorMsg, setErrorMsg] = useState("");
   const authoringRef = useRef(false);
@@ -233,7 +235,7 @@ export function AbstractComponent({
 
   const reshape = useCallback((reason: string) => {
     trackReshape(id);
-    const runtime = (window as any).__RUNTIME__;
+    const runtime = ctxRuntime;
     if (runtime) {
       const vfsPath = "/src/ac/" + id + ".tsx";
       const currentSource = runtime.files.get(vfsPath) || "";
@@ -285,7 +287,7 @@ export function AbstractComponent({
     }
 
     // Need to author (or re-author)
-    const runtime = (window as any).__RUNTIME__;
+    const runtime = ctxRuntime;
     if (!runtime) {
       setPhase("error");
       setErrorMsg("No runtime available");
@@ -374,7 +376,7 @@ export function AbstractComponent({
         authoringRef.current = false;
       }
     })();
-  }, [id, compiledComponent, shapeChanged, currentInputShape, currentToolShape, currentHandlerShape]);
+  }, [id, ctxRuntime, compiledComponent, shapeChanged, currentInputShape, currentToolShape, currentHandlerShape]);
 
   // Error boundary crash handler with rollback on repeated crashes
   const handleCrash = useCallback((error: Error, crashCount: number) => {
@@ -383,7 +385,7 @@ export function AbstractComponent({
     if (crashCount >= 3) {
       const prev = getPreviousSource(id);
       if (prev) {
-        const runtime = (window as any).__RUNTIME__;
+        const runtime = ctxRuntime;
         if (runtime) {
           const vfsPath = "/src/ac/" + id + ".tsx";
           const currentSource = runtime.files.get(vfsPath) || "";
@@ -456,11 +458,10 @@ export function AbstractComponent({
   }
 
   // Render the authored component wrapped in ToolContext
-  const Compiled = compiledComponent;
   return (
     <ComponentErrorBoundary componentId={id} onCrash={handleCrash}>
       <ToolContext.Provider value={toolCtxValue}>
-        <Compiled inputs={inputs} handlers={handlerFns} />
+        {React.createElement(compiledComponent, { inputs, handlers: handlerFns })}
       </ToolContext.Provider>
     </ComponentErrorBoundary>
   );

@@ -14,6 +14,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { AbstractComponent } from "./ctxl/abstract-component";
+import { RuntimeContext } from "./ctxl/hooks";
 import "./ac/_registry";
 
 declare global {
@@ -33,31 +34,37 @@ if (!window.__RUNTIME__._mounted) {
   const objectiveAtom = atoms?.get("objective");
   const objective = objectiveAtom?.get() || "What would you like to build?";
 
+  // Wrap the tree in RuntimeContext.Provider — dogfooding the same context
+  // that library consumers use via <CtxlProvider>.
+  const runtimeCtx = { runtime: window.__RUNTIME__, atoms: window.__ATOMS__ };
+
   root.render(
-    React.createElement(AbstractComponent, {
-      id: "root",
-      inputs: { objective },
-      tools: [
-        { name: "report", description: "Report status to the system", handler: (args) => { console.log("[root] report:", args); return "reported"; } },
-      ],
-      guidelines: "You are the root component. Present a clean interface for the user to describe what they want to build. Decompose objectives into child AbstractComponents when appropriate. Be welcoming and visually polished.",
-      fallback: React.createElement("div", {
-        style: {
-          display: "flex", alignItems: "center", justifyContent: "center",
-          height: "100vh", fontFamily: "system-ui", color: "#888",
-          background: "#0a0a0a",
-        }
-      },
-        React.createElement("div", { style: { textAlign: "center" } },
-          React.createElement("div", {
-            style: {
-              fontSize: "48px", marginBottom: "16px", opacity: 0.3,
-            }
-          }, "\u2726"),
-          React.createElement("div", { style: { fontSize: "14px" } }, "Authoring root component..."),
+    React.createElement(RuntimeContext.Provider, { value: runtimeCtx },
+      React.createElement(AbstractComponent, {
+        id: "root",
+        inputs: { objective },
+        tools: [
+          { name: "report", description: "Report status to the system", handler: (args: any) => { console.log("[root] report:", args); return "reported"; } },
+        ],
+        guidelines: "You are the root component. Present a clean interface for the user to describe what they want to build. Decompose objectives into child AbstractComponents when appropriate. Be welcoming and visually polished.",
+        fallback: React.createElement("div", {
+          style: {
+            display: "flex", alignItems: "center", justifyContent: "center",
+            height: "100vh", fontFamily: "system-ui", color: "#888",
+            background: "#0a0a0a",
+          }
+        },
+          React.createElement("div", { style: { textAlign: "center" } },
+            React.createElement("div", {
+              style: {
+                fontSize: "48px", marginBottom: "16px", opacity: 0.3,
+              }
+            }, "\u2726"),
+            React.createElement("div", { style: { fontSize: "14px" } }, "Authoring root component..."),
+          ),
         ),
-      ),
-    })
+      }),
+    )
   );
   window.__RUNTIME__._mounted = true;
 }
