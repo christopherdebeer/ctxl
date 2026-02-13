@@ -25,9 +25,9 @@ Every row is load-bearing. Every row has a direct implementation consequence.
 | React Concept | Agent Concept | Implementation |
 |---|---|---|
 | State / Store | Memory | Scoped atoms (external, persistent) + `useState` (local, ephemeral). Both survive self-modification via different mechanisms. |
-| Props | Context from orchestrator | Parent passes `inputs` (data), `tools` (capabilities), `guidelines` (hints). The component reasons within these constraints. |
+| Props | Context from orchestrator | Parent passes `inputs` (data), `tools` (agent capabilities with handlers), `handlers` (implementation callbacks), `guidelines` (hints). The component reasons within these constraints. |
 | `useEffect` | Perception / Triggers | `useReasoning` hook: when deps change, the component reasons about the delta. Settling is the dependency array. |
-| Event handlers | Motor actions / Tools | Parent-defined, scoped tools. The component invokes them; the parent decides what they do. `report` is the upward channel. |
+| Event handlers | Motor actions / Tools + Handlers | Tools: agent-level capabilities with colocated handlers, auto-dispatched via React Context. Handlers: implementation callbacks for UI wiring. `report` is the canonical upward channel. |
 | `render()` output | Speech act / Body | The component's visual output IS its expression. Not a view of the agent. The agent itself. |
 | Re-render cycle | Reasoning loop | Trigger (input change) -> assess (`useReasoning`) -> express (render). React's own cycle, with LLM in the assess step. |
 | Error boundary | Immune system | Catches self-modification crashes. Rollback to previous source. Auto-recovery from hook violations. |
@@ -49,13 +49,17 @@ There is no `<Agent>` component. There is no special agent type. There are compo
   inputs={{ data: metrics, timeRange }}
   tools={[
     { name: "reformat", description: "Change how data is displayed",
-      schema: { format: "'table' | 'chart' | 'cards'" } },
+      schema: { format: "'table' | 'chart' | 'cards'" },
+      handler: (args) => setDisplayMode(args.format) },
     { name: "report", description: "Send observation to parent",
-      schema: { observation: "string", severity: "'info' | 'warning'" } },
+      schema: { observation: "string", severity: "'info' | 'warning'" },
+      handler: (args) => handleReport(args) },
   ]}
+  handlers={{
+    onSelect: { description: "Called when user selects a metric", fn: handleSelect },
+  }}
   guidelines="Show key metrics prominently. Highlight anomalies."
   fallback={<MetricsSkeleton />}
-  onToolCall={handleToolCall}
 />
 ```
 
@@ -65,33 +69,34 @@ There is no `<Agent>` component. There is no special agent type. There are compo
 
 **`inputs`** -- The component's data. Structured, typed. Not a purpose string -- actual values (or atoms) the component will consume. When inputs change, delta-reasoning hooks inside the component fire.
 
-**`tools`** -- The actions this component can take. Defined by the parent, scoped to this component's role. Each tool has a name, description, and optionally a schema. These become the LLM's available tool_use calls during reasoning. The `report` tool is the canonical upward channel.
+**`tools`** -- Agent-level capabilities this component can invoke during reasoning. Defined by the parent, scoped to this component's role. Each tool has a name, description, optionally a schema, and a colocated `handler` function. Tools are injected into `useReasoning` automatically via React Context (`ToolContext`) -- the child component never sees or threads them through props. The `report` tool is the canonical upward channel.
+
+**`handlers`** -- Implementation callbacks for UI wiring. Unlike tools (which are agent-level and auto-dispatched during reasoning), handlers are passed to the child as `props.handlers` for explicit use in the UI (e.g., `onChange`, `onSelect`). Each handler has a `description` (for the authoring prompt) and an `fn` (the actual callback).
 
 **`guidelines`** -- Minimal authoring hints. Shape constraints, UX preferences, domain rules. Kept short. Not a specification -- a nudge.
 
 **`fallback`** -- What renders during authoring. This is the parent's responsibility, just like a Suspense fallback. Shown only on the very first mount ever -- subsequent page loads have source cached in VFS/IDB and render immediately.
 
-**`onToolCall`** -- How tool invocations reach the parent. Props down (inputs, tools), callbacks up (onToolCall). Standard React data flow.
-
 ### What happens under the hood
 
 ```
-<AbstractComponent id="X" inputs={...} tools={...} />
+<AbstractComponent id="X" inputs={...} tools={...} handlers={...} />
         |
         v
   Does VFS have source for id "X"?
         |
-   Yes -+-> Render the cached component, pass inputs/tools as props
+   Yes -+-> Render the cached component, pass { inputs, handlers } as props
+        |   Wrap in ToolContext.Provider (injects tools for useReasoning)
         |   Delta-reasoning hooks fire if inputs changed
         |
    No --+-> Show fallback
-        |   Author: LLM generates source from inputs shape + tools + guidelines
+        |   Author: LLM generates source from inputs shape + tools + handlers + guidelines
         |   Write to VFS + IDB
         |   Build + React Refresh
         |   Render the new component
 ```
 
-After first authoring, this is just a React component. It renders, re-renders, handles events, manages local state. The only difference from a hand-written component: it was written by an LLM, and it contains `useReasoning` hooks that invoke the LLM when its inputs change.
+After first authoring, this is just a React component. It renders, re-renders, handles events, manages local state. The only difference from a hand-written component: it was written by an LLM, and it contains `useReasoning` hooks that invoke the LLM when its inputs change. Parent tools are available transparently via context.
 
 ---
 
@@ -108,13 +113,13 @@ The `id` prop is the authoring identity. It maps to a VFS path (e.g., `id="metri
 | Situation | What Happens |
 |---|---|
 | New id, no source in VFS | **Author.** LLM generates source. Component renders after authoring completes. |
-| Known id, source cached, inputs/tools shape unchanged | **Render.** Normal React render. No LLM call. Instant. |
+| Known id, source cached, inputs/tools/handlers shape unchanged | **Render.** Normal React render. No LLM call. Instant. |
 | Known id, source cached, input *values* changed | **Render + perceive.** Component renders. Internal `useReasoning` hooks fire on deltas. |
-| Known id, source cached, input/tools *shape* changed | **Re-author.** Parent changed the contract. LLM re-authors with existing source + delta as context. |
+| Known id, source cached, input/tools/handlers *shape* changed | **Re-author.** Parent changed the contract. LLM re-authors with existing source + delta as context. |
 | Known id, render crashes | **Error boundary.** Catch, optionally roll back to previous source. |
 | Component triggers self-modification | **Reshape.** Rare escalation from within. Same build pipeline as authoring. |
 
-Shape change detection: shallow comparison of input keys and tool names. If a new key appears, a key disappears, or a tool is added/removed, the shape changed. Value changes within the same shape are handled by delta-reasoning hooks, not re-authoring.
+Shape change detection: comparison of input keys + value types, tool names + schemas, and handler names. If the structural shape of inputs, tools, or handlers changes, the component is re-authored. Value changes within the same shape are handled by delta-reasoning hooks, not re-authoring.
 
 ### Reusable components
 
@@ -206,12 +211,14 @@ The component's runtime intelligence lives in hooks, not in method calls.
 
 ```tsx
 function useReasoning(
-  prompt: string | ((prev: any, next: any) => string),
+  prompt: string | ((prev: any[], next: any[]) => string),
   deps: any[],
   options?: {
-    tools?: ToolDef[];
-    onResult?: (result: ReasoningResult) => void;
+    tools?: ToolDef[];          // component-local tools (merged with parent tools from context)
+    onToolCall?: (name: string, args: any) => any;  // fallback for tools without handlers
     debounceMs?: number;
+    componentId?: string;
+    maxTurns?: number;          // multi-turn agent loop limit (default 3)
   }
 ): ReasoningResult | null;
 ```
@@ -221,30 +228,26 @@ Semantics:
 - **Fires when deps change.** Like `useEffect`, but instead of running a side effect, it sends the delta to the LLM.
 - **Returns the result as state.** The component re-renders when the result arrives. The result is available in the render body.
 - **Automatic settling.** The dependency array prevents infinite loops -- same mechanism as `useEffect`. If the reasoning result doesn't change the deps, the hook doesn't re-fire.
-- **Scoped tools.** The LLM can only invoke tools declared for this hook. Tools are the component's hands, not a universal agent interface.
+- **Multi-turn agent loop.** After dispatching tool calls, results are fed back to the LLM for follow-up reasoning (up to `maxTurns`, default 3). The LLM can assess results, invoke more tools, or escalate to reshape.
+- **Parent tools via context.** Parent-provided tools are automatically available via React Context (`ToolContext`). The child component never needs to thread tools or dispatch functions through props. Component-local tools (from options) are merged with parent tools.
+- **Tool dispatch priority.** `__reshape` -> parent tool handler (via context) -> local tool handler -> `onToolCall` fallback.
+- **Auto-dispatch reshape.** The `reshape` field in the reasoning result is automatically dispatched as a `__reshape` tool call, in addition to any explicit `__reshape` entries in `toolCalls`.
 - **Debounce.** Optional. Prevents rapid-fire LLM calls when deps change frequently (e.g., during typing).
 
 ### Example: a component that reasons about its data
 
 ```tsx
-function MetricsDashboard({ inputs, tools, onToolCall }) {
+function MetricsDashboard({ inputs, handlers }) {
   const { data, timeRange } = inputs;
   const [displayMode, setDisplayMode] = useState('table');
 
   // Reason about data changes
+  // Parent tools (reformat, report) are available automatically via ToolContext
   const analysis = useReasoning(
     (prev, next) => `Data updated. ${next.length} points over ${timeRange}.
      Previously showing ${displayMode}. Any anomalies or format suggestions?`,
     [data, timeRange],
-    {
-      tools,
-      onResult: (result) => {
-        // LLM might invoke 'reformat' tool or 'report' tool
-        if (result.toolCalls) {
-          result.toolCalls.forEach(tc => onToolCall(tc.name, tc.args));
-        }
-      }
-    }
+    { componentId: "metrics-dashboard" }
   );
 
   return (
@@ -257,21 +260,23 @@ function MetricsDashboard({ inputs, tools, onToolCall }) {
 }
 ```
 
-This is a React component. It has state, effects (the reasoning hook), event handling (via tool callbacks), and a render function. The LLM is woven into the lifecycle, not bolted on.
+This is a React component. It has state, effects (the reasoning hook), event handling (via tool context), and a render function. The LLM is woven into the lifecycle, not bolted on. The parent's tools are invisibly available -- the child just specifies `componentId` and the hook handles dispatch through context.
 
 ### What `useReasoning` does NOT do
 
 - It does not send the component's full source code. The component doesn't need to be self-aware to reason about data.
-- It does not trigger self-modification. If the LLM decides self-modification is needed, it returns a signal. The component (or the AbstractComponent wrapper) handles escalation explicitly.
-- It does not have access to the full state store. It sees what's in its deps and tools. Minimal context, not maximal.
+- It does not trigger self-modification directly. If the LLM decides self-modification is needed, it returns a `reshape` signal. The hook auto-dispatches this to the AbstractComponent wrapper via context, which handles the re-authoring.
+- It does not have access to the full state store. It sees what's in its deps plus inspection context (shared atoms and sibling components are included automatically in the system prompt). Minimal context, not maximal.
 
 ---
 
-## 7. Tools as Component Interface
+## 7. Tools and Handlers
 
-Tools are not a generic agent API. They are the specific actions a component can take, defined by its parent.
+Tools and handlers are distinct concepts, reflecting two kinds of parent-child communication.
 
-### Parent-defined tools
+### Tools: agent-level capabilities
+
+Tools are actions the component can invoke during LLM reasoning. Each tool carries a colocated `handler` function. Parent-provided tools are injected into `useReasoning` automatically via React Context (`ToolContext`) -- the child component is invisible to them; it never receives or threads them through props.
 
 ```tsx
 <AbstractComponent
@@ -280,28 +285,33 @@ Tools are not a generic agent API. They are the specific actions a component can
   tools={[
     { name: "applyFilter",
       description: "Add or modify a filter on the data",
-      schema: { field: "string", operator: "'eq'|'gt'|'lt'|'contains'", value: "any" } },
+      schema: { field: "string", operator: "'eq'|'gt'|'lt'|'contains'", value: "any" },
+      handler: (args) => dispatch({ type: 'ADD_FILTER', payload: args }) },
     { name: "clearFilters",
-      description: "Remove all active filters" },
+      description: "Remove all active filters",
+      handler: () => dispatch({ type: 'CLEAR_FILTERS' }) },
     { name: "report",
       description: "Tell parent about data quality issues found during filtering",
-      schema: { issue: "string", severity: "'low'|'medium'|'high'", affectedRows: "number" } },
+      schema: { issue: "string", severity: "'low'|'medium'|'high'", affectedRows: "number" },
+      handler: (args) => handleQualityReport(args) },
   ]}
-  onToolCall={(name, args) => {
-    if (name === 'applyFilter') dispatch({ type: 'ADD_FILTER', payload: args });
-    if (name === 'clearFilters') dispatch({ type: 'CLEAR_FILTERS' });
-    if (name === 'report') handleQualityReport(args);
+  handlers={{
+    onFilterChange: { description: "Called when user manually edits a filter", fn: handleFilterEdit },
   }}
 />
 ```
 
-The child's `useReasoning` hooks can invoke these tools. The tools flow down from parent (like props). The results flow up via `onToolCall` (like events). Standard React data flow.
+Dispatch routing in `useReasoning`: `__reshape` -> parent tool handler (via context) -> local tool handler -> `onToolCall` fallback. The child never writes a switch/dispatch function -- tool invocations route through the handler directly.
+
+### Handlers: implementation callbacks
+
+Handlers are UI-wiring callbacks (like `onChange`, `onSelect`) passed to the child as `props.handlers`. Unlike tools (which are invisible and auto-dispatched during reasoning), handlers are explicitly available in the authored component for wiring into the UI. The authoring prompt describes them so the LLM knows to use them.
 
 ### Tool granularity
 
 There is no universal rule. It depends entirely on context.
 
-A dashboard component might get coarse tools: `{ name: "refresh" }`, `{ name: "report" }`. A data editor might get fine-grained tools: `{ name: "updateCell", schema: { row, col, value } }`. The parent decides, because the parent knows the domain.
+A dashboard component might get coarse tools: `{ name: "refresh", handler: ... }`, `{ name: "report", handler: ... }`. A data editor might get fine-grained tools: `{ name: "updateCell", schema: { row, col, value }, handler: ... }`. The parent decides, because the parent knows the domain.
 
 The `report` tool pattern deserves emphasis: it's the child reasoning about what's worth communicating upward. Not a mechanical `onChange` -- a deliberate, structured communication from child to parent. The child perceives something, decides it matters, and reports. The parent can reason about the report in turn. Conversation through the tree.
 
@@ -311,12 +321,11 @@ Every abstract component implicitly has one additional tool:
 
 ```tsx
 { name: "__reshape",
-  description: "Rewrite your own source code. Use ONLY when your current
-   capabilities are genuinely insufficient. Returns new source.",
+  description: "Rewrite your own source code to better handle the current situation.",
   schema: { reason: "string" } }
 ```
 
-This tool is always available but should rarely be invoked. The authoring prompt instructs the LLM: "you can reshape yourself if needed, but prefer reasoning within your current form." When invoked, it triggers the build infrastructure (VFS write -> esbuild -> Refresh). The component's external state survives; local state is best-effort.
+This tool is always available. The authoring prompt encourages the LLM to prefer action over inaction -- when uncertain, reshaping and composing child AbstractComponents is preferred over doing nothing. When invoked, it triggers the build infrastructure (VFS write -> esbuild -> Refresh). The component's external state survives; local state is best-effort. The `reshape` field in the reasoning result is also auto-dispatched as a `__reshape` call, so the LLM can signal reshape via either mechanism.
 
 ---
 
@@ -327,23 +336,27 @@ Composition is rendering children. That's it.
 ### A parent that decomposes itself
 
 ```tsx
-function Workspace({ inputs, tools, onToolCall }) {
+function Workspace({ inputs, handlers }) {
   const { objective } = inputs;
   const [tasks, setTasks] = useState([]);
 
   // Reason about the objective to decompose into tasks
+  // Parent tools (e.g., report) are automatically available via ToolContext
   const plan = useReasoning(
     `Objective: "${objective}". Decompose into 2-4 concrete tasks.
      Return structured task list.`,
     [objective],
     {
-      tools: [{ name: "report", description: "Report planning status" }],
-      onResult: (result) => {
-        if (result.structured?.tasks) setTasks(result.structured.tasks);
-        if (result.toolCalls) result.toolCalls.forEach(tc => onToolCall(tc.name, tc.args));
-      }
+      tools: [{ name: "setTasks", description: "Set the task list",
+                handler: (args) => setTasks(args.tasks) }],
+      componentId: "workspace",
     }
   );
+
+  // Update tasks from reasoning result
+  useEffect(() => {
+    if (plan?.structured?.tasks) setTasks(plan.structured.tasks);
+  }, [plan?.structured?.tasks]);
 
   return (
     <Layout>
@@ -353,11 +366,13 @@ function Workspace({ inputs, tools, onToolCall }) {
           id={`task-${task.type}`}
           inputs={{ task, context: objective }}
           tools={[
-            { name: "complete", description: "Mark task as done", schema: { result: "any" } },
-            { name: "report", description: "Report progress or blockers" },
+            { name: "complete", description: "Mark task as done",
+              schema: { result: "any" },
+              handler: (args) => handleTaskComplete(task.id, args) },
+            { name: "report", description: "Report progress or blockers",
+              handler: (args) => handleTaskReport(task.id, args) },
           ]}
           fallback={<TaskSkeleton title={task.title} />}
-          onToolCall={(name, args) => handleTaskAction(task.id, name, args)}
         />
       ))}
     </Layout>
@@ -365,7 +380,7 @@ function Workspace({ inputs, tools, onToolCall }) {
 }
 ```
 
-The parent doesn't call `compose()`. It doesn't generate files. It renders children with props. React manages the tree. Each child authors itself on first mount (or renders from cache).
+The parent doesn't call `compose()`. It doesn't generate files. It renders children with props. React manages the tree. Each child authors itself on first mount (or renders from cache). Tools carry their handlers directly -- no separate `onToolCall` dispatch.
 
 Note: `id={`task-${task.type}`}` means tasks of the same type share authored source. A "data-analysis" task and a "summarization" task get different source. Two "data-analysis" tasks share source but have separate React instances and separate inputs.
 
@@ -378,15 +393,15 @@ The root component is itself an `<AbstractComponent>`:
   id="root"
   inputs={{ objective: userObjective }}
   tools={[
-    { name: "report", description: "Report overall status to the system" },
+    { name: "report", description: "Report overall status to the system",
+      handler: (args) => console.log("[root] report:", args) },
   ]}
   guidelines="Decompose the objective into a workspace with task components."
   fallback={<AppSkeleton />}
-  onToolCall={handleRootReport}
 />
 ```
 
-The root authors itself. Its authored source renders child `<AbstractComponent>`s. Those author themselves. The tree grows by recursive self-decomposition. No orchestrator needed -- React's render cycle IS the orchestrator.
+The root authors itself. Its authored source renders child `<AbstractComponent>`s. Those author themselves. The tree grows by recursive self-decomposition. No orchestrator needed -- React's render cycle IS the orchestrator. Tools with handlers flow down the tree; each level's tools are injected into its children's `useReasoning` via `ToolContext`.
 
 ---
 
@@ -618,11 +633,15 @@ src/
   # Prompts
   prompts.ts           -- buildAuthoringPrompt + buildReasoningContext (~135 LOC)
 
-  # VFS seed sources (compiled by esbuild in-browser)
-  seed-ctxl-hooks.ts   -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom
-  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper + mutation history + rollback + authoring queue + freshness tracking
-  seed-v2-main.ts      -- VFS /src/main.tsx: renders root <AbstractComponent>
-  seeds-v2.ts          -- Assembles seed map (4 VFS files)
+  # VFS seed sources (real .ts/.tsx files, imported via Vite's ?raw suffix)
+  seeds/ctxl/hooks.ts              -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom + ToolContext
+  seeds/ctxl/abstract-component.tsx -- VFS /src/ctxl/abstract-component.tsx: AC wrapper + ToolContext.Provider + mutation history + rollback + authoring queue + freshness tracking
+  seeds/ac/_registry.ts            -- VFS /src/ac/_registry.ts: component registry (initially empty)
+  seeds/main.tsx                   -- VFS /src/main.tsx: renders root <AbstractComponent>
+  seeds-v2.ts          -- Assembles seed map (imports seeds via ?raw)
+
+  # Seed type-checking
+  tsconfig.seeds.json  -- Separate tsconfig for seed files (IDE + npm run check:seeds)
 
   # Dev harness
   boot.ts              -- Dev UI + atom registry + VFS seeding + Inspect tab (components, atoms, mutations)
@@ -637,15 +656,30 @@ interface AbstractComponentProps {
   id: string;
   inputs?: Record<string, any>;
   tools?: ToolDef[];
+  handlers?: Record<string, HandlerDef>;
   guidelines?: string;
   fallback?: React.ReactNode;
-  onToolCall?: (name: string, args: any) => void;
 }
 
 interface ToolDef {
   name: string;
   description: string;
   schema?: Record<string, string>;   // lightweight type hints for LLM
+  handler?: (args: any) => any;      // colocated handler, auto-dispatched
+}
+
+interface HandlerDef {
+  description: string;               // described in authoring prompt
+  fn: (...args: any[]) => any;       // passed to child as props.handlers
+}
+
+// --- Tool Context (React Context for tool injection) ---
+
+interface ToolContextValue {
+  tools: ToolDef[];
+  dispatch: (name: string, args: any) => any;
+  reshape: (reason: string) => void;
+  componentId: string;
 }
 
 // --- Reasoning ---
@@ -654,7 +688,15 @@ interface ReasoningResult {
   content?: string;
   structured?: any;
   toolCalls?: Array<{ name: string; args: any }>;
-  reshape?: { reason: string };       // signals self-modification needed
+  reshape?: { reason: string };       // signals self-modification needed (auto-dispatched)
+}
+
+interface ReasoningOptions {
+  tools?: ToolDef[];          // component-local tools (merged with parent tools from context)
+  onToolCall?: (name: string, args: any) => any;  // fallback for tools without handlers
+  debounceMs?: number;
+  componentId?: string;
+  maxTurns?: number;          // multi-turn agent loop limit (default 3)
 }
 
 // --- Atoms ---
@@ -694,7 +736,9 @@ interface Runtime {
   files: Map<string, string>;
   config: LLMConfig;
 
-  callLLM(system: string, user: string, extras?: Record<string, any>): Promise<LLMResponse>;
+  callLLM(system: string, messages: Array<{ role: string; content: any }>, extras?: Record<string, any>): Promise<LLMResponse>;
+  buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], handlers?: Record<string, string>, guidelines?: string, existingSource?: string): string;
+  regenerateRegistry(): void;
   applyPatch(patches: FilePatch[]): Promise<void>;
   buildAndRun(reason?: string): Promise<void>;
 
@@ -709,28 +753,31 @@ interface Runtime {
 ```
         Parent Component
             |
-            | inputs, tools, guidelines, fallback, onToolCall
+            | inputs, tools (with handlers), handlers, guidelines, fallback
             v
     ┌─ <AbstractComponent> ─────────────────────────────┐
     |                                                    |
     |  1. Check VFS for source (by id)                   |
     |  2. If missing: author (LLM call, show fallback)   |
     |  3. If present: render cached component             |
-    |  4. Wrap in error boundary                          |
+    |  4. Wrap in ToolContext.Provider + error boundary   |
     |                                                    |
     |  ┌─ Authored Component ──────────────────────┐     |
+    |  |  receives { inputs, handlers }             |     |
     |  |                                            |     |
     |  |  useReasoning(prompt, [deps])              |     |
     |  |    -> fires on dep change                  |     |
-    |  |    -> LLM call with scoped tools           |     |
-    |  |    -> result updates local state           |     |
-    |  |    -> tool calls bubble up via onToolCall  |     |
+    |  |    -> multi-turn agent loop (maxTurns)     |     |
+    |  |    -> parent tools via ToolContext (auto)   |     |
+    |  |    -> tool dispatch via colocated handlers  |     |
+    |  |    -> reshape auto-dispatched via context   |     |
     |  |                                            |     |
     |  |  useAtom(atom)                             |     |
     |  |    -> read/write shared state              |     |
     |  |    -> survives self-modification           |     |
     |  |                                            |     |
     |  |  render()                                  |     |
+    |  |    -> wires props.handlers into UI          |     |
     |  |    -> may include child <AbstractComponent>|     |
     |  |    -> recursive decomposition              |     |
     |  |                                            |     |
@@ -741,7 +788,7 @@ interface Runtime {
     |    -> rollback via mutation history                  |
     └────────────────────────────────────────────────────┘
             |
-            | onToolCall (including 'report')
+            | tool handlers invoked directly (including 'report')
             v
         Parent Component
 ```
@@ -758,7 +805,7 @@ interface Runtime {
 
 2. **`atoms.ts` + `useAtom` hook** -- DONE. Host-side `createAtomRegistry()` with IDB persistence + hydration. VFS-side `useAtom(key, default)` hook via `useSyncExternalStore`. ~100 LOC host + ~30 LOC VFS.
 
-3. **`useReasoning` hook** -- DONE. Delta-driven reasoning as VFS seed. Tracks previous deps, builds delta prompt, calls LLM with `reason_response` tool, dispatches tool calls via `onToolCall`. Debounce + max-fire-count (10/mount) for settling. ~140 LOC.
+3. **`useReasoning` hook** -- DONE. Delta-driven reasoning as VFS seed. Tracks previous deps, builds delta prompt, calls LLM with `reason_response` tool. Multi-turn agent loop (up to `maxTurns`, default 3) dispatches tool calls and feeds results back. Parent tools merged via `ToolContext`. Debounce + max-fire-count (10/mount) for settling. ~250 LOC.
 
 4. **`prompts.ts`** -- DONE. `buildAuthoringPrompt(id, inputs, tools, guidelines?, existingSource?)` derives input shape automatically. `buildReasoningContext(id, tools)` for hook system prompts. v1 prompts preserved. ~120 LOC added.
 
@@ -776,7 +823,7 @@ interface Runtime {
 
 8. **`useReasoning` context fix** -- DONE. The hook now builds its own system context via `buildSystemContext(tools, componentId)` inline, rather than relying on a missing `window.__REASONING_CONTEXT__` global. Self-contained ~25 LOC function that formats tool declarations and response guidelines.
 
-9. **Tool dispatch via `useReasoning`** -- DONE. The hook dispatches tool calls via `onToolCall` callback in options. The authoring prompt now explicitly instructs authored components to pass `{ tools, onToolCall, componentId }` through to `useReasoning`, enabling automatic tool dispatch including the `report` pattern.
+9. **Tool dispatch via `useReasoning`** -- DONE. Tools (with colocated handlers) and handlers (implementation callbacks) are now separate concepts. Parent tools are injected via `ToolContext` and auto-dispatched. Dispatch priority: `__reshape` -> parent tool handler (via context) -> local tool handler -> `onToolCall` fallback. The `reshape` field in reasoning results is also auto-dispatched. Authored components receive `{ inputs, handlers }` -- not `{ inputs, tools, onToolCall }`.
 
 10. **Self-modification via `__reshape`** -- DONE. The `handleToolCall` callback intercepts `__reshape`, records a mutation entry with the current source as `previousSource`, then forces a shape mismatch to trigger re-authoring. Re-authoring includes existing source as context.
 
@@ -808,7 +855,7 @@ interface Runtime {
 
 **Production hardening.**
 
-18. **Shape change detection refinement** -- DONE. Shape comparison now tracks key names + value types (not just key names) and tool schemas (not just tool names). Added `reshapeCounters` -- per-component freshness tracking that counts `__reshape` requests since last authoring. Warns when a component requests 3+ reshapes, indicating stale guidelines or mismatched authoring. Counter resets on successful re-authoring.
+18. **Shape change detection refinement** -- DONE. Shape comparison now tracks key names + value types (not just key names), tool schemas (not just tool names), and handler names. Added `reshapeCounters` -- per-component freshness tracking that counts `__reshape` requests since last authoring. Warns when a component requests 3+ reshapes, indicating stale guidelines or mismatched authoring. Counter resets on successful re-authoring.
 
 19. **Inspection context** -- DONE. The `useReasoning` system context now automatically includes: (a) shared atom state -- all atom keys and current values, (b) sibling component IDs from the registry. This gives the reasoning LLM on-demand visibility into shared state and the component tree without polluting the authoring prompt. The LLM sees what it needs for reasoning decisions without the component author having to manually wire it.
 
@@ -836,11 +883,11 @@ The codebase is now v2-canonical. No v1 code remains. The full system:
 - **llm.ts** -- unified LLM transport (anthropic direct / proxy)
 - **atoms.ts** -- scoped external state with IDB persistence
 
-**VFS seeds** (compiled in-browser by esbuild):
-- **hooks.ts** -- `useReasoning` (delta-driven perception + inspection context) + `useAtom` (shared state)
-- **abstract-component.tsx** -- identity resolution, tool-based authoring (`write_component`), mutation history, error boundary + rollback, authoring queue
-- **main.tsx** -- renders root `<AbstractComponent>`
-- **ac/_registry.ts** -- auto-generated component registry
+**VFS seeds** (real .ts/.tsx files under `src/seeds/`, imported via Vite's `?raw` suffix, compiled in-browser by esbuild):
+- **seeds/ctxl/hooks.ts** -- `useReasoning` (delta-driven perception + multi-turn agent loop + ToolContext integration + inspection context) + `useAtom` (shared state) + `ToolContext` (React Context for parent tool injection)
+- **seeds/ctxl/abstract-component.tsx** -- identity resolution, ToolContext.Provider, tool-based authoring (`write_component`), handlers prop forwarding, mutation history, error boundary + rollback, authoring queue, shape change detection (inputs + tools + handlers), freshness tracking
+- **seeds/main.tsx** -- renders root `<AbstractComponent>`
+- **seeds/ac/_registry.ts** -- auto-generated component registry
 
 The system gets simpler by aligning with React instead of building alongside it.
 
