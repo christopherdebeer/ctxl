@@ -41,14 +41,14 @@ export function buildAuthoringPrompt(
   const inputShape = describeShape(inputs);
   const toolList = describeTools(tools);
   const reshapeNote = tools.some(t => t.name === "__reshape") ? "" :
-    "\n- __reshape: Rewrite your own source code (use ONLY when current capabilities are insufficient) (args: { reason: string })";
+    "\n- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string }). When uncertain, prefer reshaping and composing child AbstractComponents over doing nothing.";
 
   const reauthorBlock = existingSource
     ? `\nYOU ARE BEING RE-AUTHORED. Your previous source:
 \`\`\`tsx
 ${existingSource}
 \`\`\`
-Preserve working functionality. Adapt to the new interface.`
+Preserve working functionality where applicable. Adapt confidently to the new interface — when uncertain about details, make your best judgment and compose child AbstractComponents for sub-problems.`
     : "";
 
   return `You are authoring a React component. Use the write_component tool to deliver the source code.
@@ -128,7 +128,7 @@ RESPONSE GUIDELINES:
 - "content": Brief text summary of your assessment (optional)
 - "structured": Any structured data to return to the component (optional)
 - "toolCalls": Array of { name, args } for tools you want to invoke (optional)
-- "reshape": Set { reason: "..." } ONLY if you need capabilities your current source doesn't have (rare)
+- "reshape": Set { reason: "..." } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.
 
 Be concise. Reason about what changed and what action, if any, to take.`;
 }
