@@ -620,12 +620,12 @@ src/
 
   # VFS seed sources (compiled by esbuild in-browser)
   seed-ctxl-hooks.ts   -- VFS /src/ctxl/hooks.ts: useReasoning + useAtom
-  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper + mutation history + rollback + authoring queue
+  seed-abstract-component.ts -- VFS /src/ctxl/abstract-component.tsx: AC wrapper + mutation history + rollback + authoring queue + freshness tracking
   seed-v2-main.ts      -- VFS /src/main.tsx: renders root <AbstractComponent>
   seeds-v2.ts          -- Assembles seed map (4 VFS files)
 
   # Dev harness
-  boot.ts              -- Dev UI + atom registry + VFS seeding
+  boot.ts              -- Dev UI + atom registry + VFS seeding + Inspect tab (components, atoms, mutations)
 ```
 
 ### Key interfaces
@@ -804,17 +804,21 @@ interface Runtime {
 
 **Milestone:** The system supports recursive self-decomposition. Components author children by rendering `<AbstractComponent>`. Shared atoms coordinate state across the tree. Builds are serialised to prevent race conditions. v1 legacy has been fully removed -- the codebase is now v2-canonical.
 
-### Phase 4: Robustness
+### Phase 4: Robustness -- IMPLEMENTED
 
 **Production hardening.**
 
-18. **Shape change detection refinement.** Edge case: gradual drift. Consider a "freshness" heuristic -- if the authoring was N mutations ago and reasoning keeps hitting walls, suggest re-authoring.
+18. **Shape change detection refinement** -- DONE. Shape comparison now tracks key names + value types (not just key names) and tool schemas (not just tool names). Added `reshapeCounters` -- per-component freshness tracking that counts `__reshape` requests since last authoring. Warns when a component requests 3+ reshapes, indicating stale guidelines or mismatched authoring. Counter resets on successful re-authoring.
 
-19. **Inspection tools.** Implement the `inspect_input`, `inspect_sibling`, `query_state` tool pattern. Components can pull context on demand instead of receiving it in the system prompt.
+19. **Inspection context** -- DONE. The `useReasoning` system context now automatically includes: (a) shared atom state -- all atom keys and current values, (b) sibling component IDs from the registry. This gives the reasoning LLM on-demand visibility into shared state and the component tree without polluting the authoring prompt. The LLM sees what it needs for reasoning decisions without the component author having to manually wire it.
 
-20. **Dev harness update.** Update the boot.ts dev UI to understand the new architecture: show the component tree, per-component VFS source, atom values, reasoning history, mutation log. The harness observes the system but doesn't participate in it.
+20. **Dev harness: Inspect tab** -- DONE. Added a new "Inspect" view tab (alongside Component and About) with three live-updating sections:
+    - **Components**: lists all authored components by ID with VFS path and line count
+    - **Atoms**: shows all shared state atoms with current values (truncated for large values)
+    - **Mutation Log**: reverse-chronological log of all mutations (authoring, reshape, rollback) with timestamps and outcomes. Rollback entries are visually distinct.
+    The panel auto-refreshes every 2 seconds while visible. Purely observational -- the harness reads globals but never writes to them.
 
-**Milestone:** The system handles edge cases gracefully: bad authoring, tool failures, self-modification crashes, shape changes. The dev harness provides full visibility.
+**Milestone:** The system handles edge cases: type-aware shape detection catches more structural changes, freshness tracking detects stale authoring, and the Inspect tab provides full runtime visibility into the component tree, shared state, and mutation history.
 
 ---
 
@@ -833,7 +837,7 @@ The codebase is now v2-canonical. No v1 code remains. The full system:
 - **atoms.ts** -- scoped external state with IDB persistence
 
 **VFS seeds** (compiled in-browser by esbuild):
-- **hooks.ts** -- `useReasoning` (delta-driven perception) + `useAtom` (shared state)
+- **hooks.ts** -- `useReasoning` (delta-driven perception + inspection context) + `useAtom` (shared state)
 - **abstract-component.tsx** -- identity resolution, authoring, mutation history, error boundary + rollback, authoring queue
 - **main.tsx** -- renders root `<AbstractComponent>`
 - **ac/_registry.ts** -- auto-generated component registry

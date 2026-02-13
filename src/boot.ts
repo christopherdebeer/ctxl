@@ -41,6 +41,7 @@ const settingsStatus = document.getElementById("settingsStatus")!;
 
 const viewTabs = document.querySelectorAll<HTMLElement>(".viewTab");
 const rootEl = document.getElementById("root")!;
+const inspectEl = document.getElementById("inspect")!;
 const aboutEl = document.getElementById("about")!;
 const aboutBody = aboutEl.querySelector(".markdown-body") as HTMLElement;
 
@@ -164,7 +165,7 @@ saveSettingsBtn.onclick = () => {
 };
 
 // ============================================================
-// View mode switching (Component | About)
+// View mode switching (Component | Inspect | About)
 // ============================================================
 
 async function loadAboutContent() {
@@ -180,15 +181,84 @@ async function loadAboutContent() {
   }
 }
 
+let inspectInterval: ReturnType<typeof setInterval> | null = null;
+
+function renderInspectPanel() {
+  const components = (window as any).__COMPONENTS__ || {};
+  const atoms = (window as any).__ATOMS__;
+  const mutations: any[] = (window as any).__MUTATIONS__ || [];
+
+  let html = "";
+
+  // -- Component tree --
+  html += `<div class="section"><div class="section-title">Components</div>`;
+  const compIds = Object.keys(components);
+  if (compIds.length === 0) {
+    html += `<div class="empty">No authored components yet</div>`;
+  } else {
+    for (const id of compIds) {
+      const vfsPath = `/src/ac/${id}.tsx`;
+      const source = files.get(vfsPath) || "";
+      const lines = source.split("\n").length;
+      html += `<div class="entry"><span class="entry-key">${id}</span><span class="entry-val">${vfsPath} (${lines} lines)</span></div>`;
+    }
+  }
+  html += `</div>`;
+
+  // -- Atoms --
+  html += `<div class="section"><div class="section-title">Atoms</div>`;
+  if (atoms && typeof atoms.keys === "function") {
+    const keys: string[] = atoms.keys();
+    if (keys.length === 0) {
+      html += `<div class="empty">No atoms</div>`;
+    } else {
+      for (const k of keys) {
+        try {
+          const v = atoms.get(k)?.get();
+          const s = JSON.stringify(v);
+          const display = s && s.length > 120 ? s.slice(0, 120) + "..." : s;
+          html += `<div class="entry"><span class="entry-key">${k}</span><span class="entry-val">${display}</span></div>`;
+        } catch {
+          html += `<div class="entry"><span class="entry-key">${k}</span><span class="entry-val">&lt;unreadable&gt;</span></div>`;
+        }
+      }
+    }
+  } else {
+    html += `<div class="empty">No atom registry</div>`;
+  }
+  html += `</div>`;
+
+  // -- Mutation log --
+  html += `<div class="section"><div class="section-title">Mutation Log</div>`;
+  if (mutations.length === 0) {
+    html += `<div class="empty">No mutations recorded</div>`;
+  } else {
+    for (let i = mutations.length - 1; i >= 0; i--) {
+      const m = mutations[i];
+      const cls = m.outcome === "rollback" ? "mutation rollback" : "mutation";
+      const time = new Date(m.timestamp).toLocaleTimeString();
+      html += `<div class="${cls}"><div class="trigger">[${m.componentId}] ${m.trigger}</div><div class="meta">${m.outcome} at ${time}</div></div>`;
+    }
+  }
+  html += `</div>`;
+
+  inspectEl.innerHTML = html;
+}
+
 function setView(view: string) {
   viewTabs.forEach(tab => tab.classList.toggle("active", tab.dataset.view === view));
-  if (view === "about") {
-    rootEl.classList.add("hidden");
-    aboutEl.classList.add("active");
-    loadAboutContent();
-  } else {
-    rootEl.classList.remove("hidden");
-    aboutEl.classList.remove("active");
+
+  rootEl.classList.toggle("hidden", view !== "component");
+  inspectEl.classList.toggle("active", view === "inspect");
+  aboutEl.classList.toggle("active", view === "about");
+
+  if (view === "about") loadAboutContent();
+
+  // Auto-refresh inspect panel while visible
+  if (inspectInterval) { clearInterval(inspectInterval); inspectInterval = null; }
+  if (view === "inspect") {
+    renderInspectPanel();
+    inspectInterval = setInterval(renderInspectPanel, 2000);
   }
 }
 
