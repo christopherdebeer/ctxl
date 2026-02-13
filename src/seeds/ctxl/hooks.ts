@@ -1,12 +1,17 @@
 /**
- * Seed: /src/ctxl/hooks.ts — useReasoning and useAtom hooks for VFS components.
+ * VFS SEED — imported as raw text, not compiled into the host bundle.
  *
- * These hooks bridge VFS components to the host runtime via window globals.
- * useReasoning is the core perception primitive: delta-driven LLM reasoning.
- * useAtom subscribes to shared persistent state atoms.
+ * This file is authored as normal TypeScript so it benefits from IDE
+ * autocompletion and type-checking (via tsconfig.seeds.json), but at build
+ * time Vite's `?raw` import injects its source text as a string into the
+ * host bundle.  At runtime esbuild-wasm compiles it inside the browser as
+ * part of the Virtual File System (VFS).
+ *
+ * VFS path:  /src/ctxl/hooks.ts
+ * Registry:  src/seeds-v2.ts
  */
 
-export const SEED_CTXL_HOOKS_SOURCE = `import { useState, useEffect, useRef, useCallback, useSyncExternalStore, createContext, useContext } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore, createContext, useContext } from "react";
 
 // ---- Types ----
 
@@ -57,7 +62,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string): string {
       line += " (args: { " + fields + " })";
     }
     return line;
-  }).join("\\n");
+  }).join("\n");
 
   // Inspection context: atom state + sibling components (on-demand visibility)
   let inspectionBlock = "";
@@ -72,20 +77,20 @@ function buildSystemContext(tools: ToolDef[], componentId?: string): string {
             const s = JSON.stringify(v);
             return "  " + k + ": " + (s && s.length > 80 ? s.slice(0, 80) + "..." : s);
           } catch { return "  " + k + ": <unreadable>"; }
-        }).join("\\n");
-        inspectionBlock += "\\n\\nSHARED STATE (atoms):\\n" + atomSummary;
+        }).join("\n");
+        inspectionBlock += "\n\nSHARED STATE (atoms):\n" + atomSummary;
       }
     }
     const components = (window as any).__COMPONENTS__;
     if (components) {
       const siblings = Object.keys(components).filter(k => k !== id);
       if (siblings.length > 0) {
-        inspectionBlock += "\\n\\nSIBLING COMPONENTS: " + siblings.join(", ");
+        inspectionBlock += "\n\nSIBLING COMPONENTS: " + siblings.join(", ");
       }
     }
   } catch {}
 
-  return "You are a React component (" + id + ") reasoning about a change in your inputs.\\nRespond using the reason_response tool.\\n\\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\\n" + toolLines + inspectionBlock + "\\n\\nRESPONSE GUIDELINES:\\n- \\"content\\": Brief text summary of your assessment (optional)\\n- \\"structured\\": Any structured data to return to the component (optional)\\n- \\"toolCalls\\": Array of { name, args } for tools you want to invoke (optional)\\n- \\"reshape\\": Set { reason: \\"...\\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\\n\\nBe concise. Reason about what changed and what action, if any, to take.";
+  return "You are a React component (" + id + ") reasoning about a change in your inputs.\nRespond using the reason_response tool.\n\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\n" + toolLines + inspectionBlock + "\n\nRESPONSE GUIDELINES:\n- \"content\": Brief text summary of your assessment (optional)\n- \"structured\": Any structured data to return to the component (optional)\n- \"toolCalls\": Array of { name, args } for tools you want to invoke (optional)\n- \"reshape\": Set { reason: \"...\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\n\nBe concise. Reason about what changed and what action, if any, to take.";
 }
 
 // ---- useReasoning ----
@@ -298,7 +303,7 @@ export function useReasoning(
               {
                 type: "tool_result",
                 tool_use_id: toolBlock.id,
-                content: "Tool results:\\n" + toolResults.join("\\n") + "\\n\\nContinue reasoning. If further action is needed, invoke more tools or request reshape. Otherwise return your assessment.",
+                content: "Tool results:\n" + toolResults.join("\n") + "\n\nContinue reasoning. If further action is needed, invoke more tools or request reshape. Otherwise return your assessment.",
               },
             ],
           });
@@ -364,4 +369,3 @@ export function useAtom<T = any>(key: string, defaultValue?: T): [T, (v: T | ((p
 
   return [value as T, setValue];
 }
-`;

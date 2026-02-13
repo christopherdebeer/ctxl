@@ -7,17 +7,18 @@
  * - main.tsx (entry point)
  * - ac/_registry.ts (component registry, initially empty)
  *
+ * Seed source lives under src/seeds/ as normal TypeScript files (for IDE
+ * support and type-checking) and is pulled in here as raw text via Vite's
+ * `?raw` import suffix.  At runtime the VFS is populated with these strings
+ * and esbuild-wasm compiles them inside the browser.
+ *
  * Authored component source goes into /src/ac/{id}.tsx at runtime.
  */
 
-import { SEED_CTXL_HOOKS_SOURCE } from "./seed-ctxl-hooks";
-import { SEED_ABSTRACT_COMPONENT_SOURCE } from "./seed-abstract-component";
-import { SEED_V2_MAIN_SOURCE } from "./seed-v2-main";
-
-/** Empty registry — gets regenerated when components are authored. */
-const SEED_REGISTRY_SOURCE = `// Auto-generated component registry.
-(window as any).__COMPONENTS__ ??= {};
-`;
+import SEED_CTXL_HOOKS_SOURCE from "./seeds/ctxl/hooks.ts?raw";
+import SEED_ABSTRACT_COMPONENT_SOURCE from "./seeds/ctxl/abstract-component.tsx?raw";
+import SEED_REGISTRY_SOURCE from "./seeds/ac/_registry.ts?raw";
+import SEED_V2_MAIN_SOURCE from "./seeds/main.tsx?raw";
 
 export const SEEDS: Map<string, string> = new Map([
   ["/src/ctxl/hooks.ts", SEED_CTXL_HOOKS_SOURCE],

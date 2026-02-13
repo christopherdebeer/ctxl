@@ -8,9 +8,8 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"]
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/**/*.ts", "vite.config.ts"],
-  "exclude": ["src/seeds"]
+  "include": ["src/seeds/**/*.ts", "src/seeds/**/*.tsx"]
 }
