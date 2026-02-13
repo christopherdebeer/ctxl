@@ -10,6 +10,7 @@ import { createIDB } from "./idb";
 import { createAtomRegistry } from "./atoms";
 import { createRuntime } from "./runtime";
 import { SEEDS } from "./seeds-v2";
+import { createEditor, type EditorInstance } from "./editor";
 import type { Runtime, IDB } from "./types";
 
 // ============================================================
@@ -17,7 +18,7 @@ import type { Runtime, IDB } from "./types";
 // ============================================================
 
 const statusEl = document.getElementById("status")!;
-const editorEl = document.getElementById("editor") as HTMLTextAreaElement;
+const editorEl = document.getElementById("editor")!;
 const filesEl = document.getElementById("files")!;
 const runBtn = document.getElementById("runBtn")!;
 const resetBtn = document.getElementById("resetBtn")!;
@@ -90,6 +91,7 @@ function logStatus(text: string) {
 let files = new Map<string, string>();
 let idb: IDB;
 let runtime: Runtime;
+let editor: EditorInstance;
 
 function renderFileButtons() {
   filesEl.innerHTML = "";
@@ -100,7 +102,7 @@ function renderFileButtons() {
     btn.onclick = () => {
       flushEditorToVFS();
       activePath = path;
-      editorEl.value = files.get(activePath) ?? "";
+      editor.setValue(files.get(activePath) ?? "");
       renderFileButtons();
     };
     filesEl.appendChild(btn);
@@ -109,23 +111,22 @@ function renderFileButtons() {
 
 function flushEditorToVFS() {
   const current = files.get(activePath) ?? "";
-  if (editorEl.value !== current) {
-    files.set(activePath, editorEl.value);
-    idb.put(activePath, editorEl.value).catch((e: unknown) => console.warn("flush failed:", e));
+  const editorContent = editor.getValue();
+  if (editorContent !== current) {
+    files.set(activePath, editorContent);
+    idb.put(activePath, editorContent).catch((e: unknown) => console.warn("flush failed:", e));
   }
 }
 
 function updateUnsavedIndicator() {
   if (files.size === 0) return;
   const saved = files.get(activePath) ?? "";
-  if (editorEl.value !== saved) {
+  if (editor.getValue() !== saved) {
     devToggle.classList.add("unsaved");
   } else {
     devToggle.classList.remove("unsaved");
   }
 }
-
-editorEl.addEventListener("input", updateUnsavedIndicator);
 
 // ============================================================
 // Settings panel
@@ -271,7 +272,11 @@ viewTabs.forEach(tab => { tab.onclick = () => setView(tab.dataset.view!); });
 window.addEventListener("keydown", (e) => {
   const isSave = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s";
   const isToggle = (e.ctrlKey || e.metaKey) && (e.key === "\\" || e.key.toLowerCase() === "e");
-  if (isSave) { e.preventDefault(); flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S").catch(() => {}); }
+  // CM6 handles Mod-s internally via its keymap; only handle save when
+  // the event originates outside the editor to avoid double-triggering.
+  const fromEditor = editorEl.contains(e.target as Node);
+  if (isSave && !fromEditor) { e.preventDefault(); flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S").catch(() => {}); }
+  if (isSave && fromEditor) { e.preventDefault(); }
   if (isToggle) { e.preventDefault(); toggleDrawer(); }
   if (e.key === "Escape" && leftDrawer.classList.contains("open")) closeDrawer();
 });
@@ -307,8 +312,14 @@ if (vfsRows.length === 0) {
   for (const r of vfsRows) files.set(r.path, r.text);
 }
 
+// 3b. Mount CodeMirror 6 editor
+editor = createEditor(editorEl, {
+  onChange: updateUnsavedIndicator,
+  onSave() { flushEditorToVFS(); runtime.buildAndRun("Ctrl/Cmd+S").catch(() => {}); },
+});
+
 renderFileButtons();
-editorEl.value = files.get(activePath) ?? "";
+editor.setValue(files.get(activePath) ?? "");
 logStatus("Loaded VFS. Initial build pending...");
 
 // 4. Create runtime
@@ -328,7 +339,7 @@ runtime = createRuntime({
     onStatus: logStatus,
     onMode: setMode,
     onFileChange(path: string, text: string) {
-      if (path === activePath) editorEl.value = text;
+      if (path === activePath) editor.setValue(text);
       renderFileButtons();
     },
     onError(err: unknown) {
