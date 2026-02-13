@@ -53,8 +53,8 @@ export function createRuntime({
 
     // ---- Authoring prompt builder (bridged to VFS AbstractComponent) ----
 
-    buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], guidelines?: string, existingSource?: string): string {
-      return buildAuthoringPrompt(componentId, inputs, tools, guidelines, existingSource);
+    buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], handlers?: Record<string, string>, guidelines?: string, existingSource?: string): string {
+      return buildAuthoringPrompt(componentId, inputs, tools, handlers, guidelines, existingSource);
     },
 
     // ---- Component registry regeneration ----

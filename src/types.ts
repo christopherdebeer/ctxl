@@ -78,7 +78,7 @@ export interface Runtime {
   callLLM(system: string, messages: Array<{ role: string; content: any }>, extras?: Record<string, any>): Promise<any>;
 
   // v2: Authoring
-  buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], guidelines?: string, existingSource?: string): string;
+  buildAuthoringPrompt(componentId: string, inputs: Record<string, any>, tools: ToolDef[], handlers?: Record<string, string>, guidelines?: string, existingSource?: string): string;
   regenerateRegistry(): void;
 
   // Build pipeline
@@ -131,6 +131,14 @@ export interface ToolDef {
   name: string;
   description: string;
   schema?: Record<string, string>;
+  handler?: (args: any) => any;
+}
+
+// ---- Handlers (implementation callbacks for authored components) ----
+
+export interface HandlerDef {
+  description: string;
+  fn: (...args: any[]) => any;
 }
 
 // ---- Reasoning ----

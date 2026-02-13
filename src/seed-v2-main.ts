@@ -30,7 +30,7 @@ if (!window.__RUNTIME__._mounted) {
       id: "root",
       inputs: { objective },
       tools: [
-        { name: "report", description: "Report status to the system" },
+        { name: "report", description: "Report status to the system", handler: (args) => { console.log("[root] report:", args); return "reported"; } },
       ],
       guidelines: "You are the root component. Present a clean interface for the user to describe what they want to build. Decompose objectives into child AbstractComponents when appropriate. Be welcoming and visually polished.",
       fallback: React.createElement("div", {
@@ -49,9 +49,6 @@ if (!window.__RUNTIME__._mounted) {
           React.createElement("div", { style: { fontSize: "14px" } }, "Authoring root component..."),
         ),
       ),
-      onToolCall: (name, args) => {
-        console.log("[root] Tool call:", name, args);
-      },
     })
   );
   window.__RUNTIME__._mounted = true;
