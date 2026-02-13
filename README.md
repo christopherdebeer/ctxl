@@ -9,9 +9,9 @@ A React component has state, props, effects, event handlers, a render function, 
 | React Concept | Agent Concept | Implementation |
 |---|---|---|
 | State / Store | Memory | Scoped atoms (persistent) + `useState` (ephemeral) |
-| Props | Context from orchestrator | `inputs`, `tools`, `guidelines` from parent |
+| Props | Context from orchestrator | `inputs`, `tools`, `handlers`, `guidelines` from parent |
 | `useEffect` | Perception / Triggers | `useReasoning` hook fires on dep changes |
-| Event handlers | Tools | Parent-defined, scoped actions |
+| Event handlers | Tools + Handlers | Tools (agent capabilities, auto-dispatched via context) + Handlers (implementation callbacks for UI wiring) |
 | `render()` | Speech act / Body | The component's UI IS the agent |
 | Re-render cycle | Reasoning loop | React's cycle with LLM in the assess step |
 | Error boundary | Immune system | Crash recovery + rollback to previous source |
@@ -30,16 +30,22 @@ The primitive. Not a special "agent" type -- a component that doesn't have sourc
   id="metrics-dashboard"
   inputs={{ data: metrics, timeRange }}
   tools={[
-    { name: "reformat", description: "Change how data is displayed" },
-    { name: "report", description: "Send observation to parent" },
+    { name: "reformat", description: "Change how data is displayed",
+      handler: (args) => setDisplayMode(args.format) },
+    { name: "report", description: "Send observation to parent",
+      handler: (args) => handleReport(args) },
   ]}
+  handlers={{
+    onSelect: { description: "Called when user selects a metric", fn: handleSelect },
+  }}
   guidelines="Show key metrics prominently. Highlight anomalies."
   fallback={<MetricsSkeleton />}
-  onToolCall={handleToolCall}
 />
 ```
 
-On first mount, the LLM authors the component's source from the input shape, tools, and guidelines. On subsequent renders, source is cached -- the component renders instantly from IndexedDB. When inputs change, `useReasoning` hooks inside the component fire on the delta. Self-modification is a rare escalation, not the default.
+Tools carry colocated handlers and are automatically available to `useReasoning` via React Context -- child components never thread tools through props. Handlers are implementation callbacks (like `onChange`, `onSelect`) that the child wires into its UI.
+
+On first mount, the LLM authors the component's source from the input shape, tools, handlers, and guidelines. On subsequent renders, source is cached -- the component renders instantly from IndexedDB. When inputs change, `useReasoning` hooks inside the component fire on the delta. Self-modification is an escalation, not the default.
 
 ### useReasoning
 
@@ -49,11 +55,11 @@ Intelligence as a hook, not a method call.
 const analysis = useReasoning(
   (prev, next) => `Data updated. ${next.length} points. Any anomalies?`,
   [data, timeRange],
-  { tools, onResult: (result) => { /* handle tool calls */ } }
+  { componentId: "metrics-dashboard" }
 );
 ```
 
-Fires when deps change (like `useEffect`). Returns the LLM's assessment as state. Automatic settling via dependency arrays. The component perceives changes, reasons about them, and the result flows into render -- React's own cycle, with an LLM in the assess step.
+Fires when deps change (like `useEffect`). Returns the LLM's assessment as state. Automatic settling via dependency arrays. Parent tools are automatically available via React Context -- no manual threading. The hook runs a multi-turn agent loop (up to `maxTurns`, default 3): it dispatches tool calls, feeds results back to the LLM, and lets it continue reasoning until done. The component perceives changes, reasons about them, and the result flows into render -- React's own cycle, with an LLM in the assess step.
 
 ### Scoped Atoms
 
@@ -105,11 +111,15 @@ src/
   atoms.ts             -- Atom registry with IDB persistence, pub/sub
   prompts.ts           -- Authoring + reasoning prompt builders
 
-  # VFS seeds (compiled in-browser)
-  seed-ctxl-hooks.ts         -- useReasoning + useAtom
-  seed-abstract-component.ts -- AbstractComponent wrapper + error boundary
-  seed-v2-main.ts            -- Root component
-  seeds-v2.ts                -- Seed map assembly
+  # VFS seeds (real .ts/.tsx files, imported via ?raw)
+  seeds/ctxl/hooks.ts              -- useReasoning + useAtom + ToolContext
+  seeds/ctxl/abstract-component.tsx -- AC wrapper + error boundary + ToolContext.Provider
+  seeds/ac/_registry.ts            -- Component registry (initially empty)
+  seeds/main.tsx                   -- Root component
+  seeds-v2.ts                      -- Seed map assembly (imports seeds via ?raw)
+
+  # Seed type-checking
+  tsconfig.seeds.json  -- Separate tsconfig for seed files
 
   # Dev harness
   boot.ts              -- Dev UI + Inspect tab
