@@ -108,10 +108,6 @@ export function useReasoning(
     const prevDeps = prevDepsRef.current;
     prevDepsRef.current = deps;
 
-    // Don't fire on mount if we have no previous deps to compare
-    // (first mount is handled by authoring, not reasoning)
-    if (prevDeps === null) return;
-
     // Max fire count per mount to prevent runaway
     if (fireCountRef.current >= 10) {
       console.warn("[useReasoning] Max fire count reached, stopping");
@@ -123,7 +119,7 @@ export function useReasoning(
       if (!runtime) return;
 
       const resolvedPrompt = typeof prompt === "function"
-        ? prompt(prevDeps, deps)
+        ? prompt(prevDeps || [], deps)
         : prompt;
 
       if (!resolvedPrompt) return;
