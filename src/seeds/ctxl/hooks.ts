@@ -347,8 +347,8 @@ export function useReasoning(
       }
     };
 
-    // Debounce
-    const delay = optionsRef.current.debounceMs ?? 0;
+    // Debounce — default 300ms so text-input-driven deps don't fire per-keystroke
+    const delay = optionsRef.current.debounceMs ?? 300;
     if (delay > 0) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(doReason, delay);
