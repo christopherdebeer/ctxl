@@ -90,8 +90,13 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     }
     return line;
   });
-  // __reshape is always available (even if not in parent/local tools)
-  toolLines.push("- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string }). Prefer composing child AbstractComponents for sub-problems.");
+  // Built-in tools always available (even if not in parent/local tools)
+  toolLines.push("- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string })");
+  toolLines.push("- read_atom: Read the full value of a shared state atom (args: { key: string })");
+  toolLines.push("- write_atom: Write a value to a shared state atom (args: { key: string, value: any })");
+  toolLines.push("- read_component_source: Read source code of any authored component (args: { id: string })");
+  toolLines.push("- list_components: List all authored component IDs");
+  toolLines.push("- list_atoms: List all shared state atom keys with value summaries");
 
   // Component source for self-awareness — the agent needs to know its current form
   // to decide whether reshaping is needed
@@ -243,6 +248,54 @@ export function useReasoning(
             logDispatch("reshape", "no context");
             return undefined;
           }
+          // Built-in introspection tools — always available
+          if (name === "read_atom") {
+            const atoms = (window as any).__ATOMS__;
+            if (!atoms) { logDispatch("builtin", "No atom registry"); return "No atom registry available"; }
+            const atom = atoms.get(args?.key);
+            if (!atom) { logDispatch("builtin", "not found"); return "Atom not found: " + args?.key; }
+            try { const v = JSON.stringify(atom.get(), null, 2); logDispatch("builtin", v); return v; }
+            catch { logDispatch("builtin", "<unreadable>"); return "<unreadable>"; }
+          }
+          if (name === "write_atom") {
+            const atoms = (window as any).__ATOMS__;
+            if (!atoms) { logDispatch("builtin", "No atom registry"); return "No atom registry available"; }
+            const atom = atoms.create(args?.key, undefined);
+            try {
+              atom.set(args?.value);
+              logDispatch("builtin", "written");
+              return "Atom '" + args?.key + "' updated";
+            } catch (e: any) { logDispatch("builtin", "error: " + e.message); return "Error writing atom: " + e.message; }
+          }
+          if (name === "read_component_source") {
+            const cid = args?.id || "";
+            const source = runtime.files.get("/src/ac/" + cid + ".tsx");
+            const result = source || "No source found for component: " + cid;
+            logDispatch("builtin", source ? source.length + " chars" : "not found");
+            return result;
+          }
+          if (name === "list_components") {
+            const comps = (window as any).__COMPONENTS__ || {};
+            const ids = Object.keys(comps);
+            const result = ids.length > 0 ? ids.join(", ") : "No authored components";
+            logDispatch("builtin", result);
+            return result;
+          }
+          if (name === "list_atoms") {
+            const atoms = (window as any).__ATOMS__;
+            if (!atoms || typeof atoms.keys !== "function") { logDispatch("builtin", "no registry"); return "No atom registry available"; }
+            const keys: string[] = atoms.keys();
+            if (keys.length === 0) { logDispatch("builtin", "empty"); return "No atoms"; }
+            const result = keys.map(function(k: string) {
+              try {
+                const v = atoms.get(k)?.get();
+                const s = JSON.stringify(v);
+                return k + ": " + (s && s.length > 120 ? s.slice(0, 120) + "..." : s);
+              } catch { return k + ": <unreadable>"; }
+            }).join("\n");
+            logDispatch("builtin", keys.length + " atoms");
+            return result;
+          }
           // Parent tool — dispatch via context
           if (ctx && parentTools.some((t: any) => t.name === name)) {
             const result = ctx.dispatch(name, args);
@@ -299,6 +352,51 @@ export function useReasoning(
           },
         };
 
+        // Built-in introspection tools — the agent's senses for investigating
+        // its environment on demand (v2 §5.2 inspection tool pattern).
+        const introspectionTools = [
+          {
+            name: "read_atom",
+            description: "Read the full current value of a shared state atom by key",
+            input_schema: {
+              type: "object",
+              properties: { key: { type: "string", description: "The atom key to read" } },
+              required: ["key"],
+            },
+          },
+          {
+            name: "write_atom",
+            description: "Write a value to a shared state atom. Creates the atom if it doesn't exist.",
+            input_schema: {
+              type: "object",
+              properties: {
+                key: { type: "string", description: "The atom key to write" },
+                value: { description: "The value to set (any JSON-serializable value)" },
+              },
+              required: ["key", "value"],
+            },
+          },
+          {
+            name: "read_component_source",
+            description: "Read the source code of any authored component by its ID",
+            input_schema: {
+              type: "object",
+              properties: { id: { type: "string", description: "The component ID (maps to /src/ac/{id}.tsx)" } },
+              required: ["id"],
+            },
+          },
+          {
+            name: "list_components",
+            description: "List all authored component IDs currently in the system",
+            input_schema: { type: "object", properties: {} },
+          },
+          {
+            name: "list_atoms",
+            description: "List all shared state atom keys with value summaries",
+            input_schema: { type: "object", properties: {} },
+          },
+        ];
+
         // Convert ToolDef[] → Anthropic API tool format
         const toAPITool = (t: ToolDef) => {
           const properties: Record<string, any> = {};
@@ -315,8 +413,10 @@ export function useReasoning(
         };
 
         // All tools sent as real Anthropic API tools:
-        // reason_response (terminal), __reshape (terminal), plus parent & local tools
-        const apiTools = [reasonTool, reshapeTool, ...allTools.map(toAPITool)];
+        // Terminal: reason_response, __reshape
+        // Introspection: read_atom, write_atom, read_component_source, list_components, list_atoms
+        // Domain: parent & local tools
+        const apiTools = [reasonTool, reshapeTool, ...introspectionTools, ...allTools.map(toAPITool)];
 
         // Build system context from merged tools
         const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
