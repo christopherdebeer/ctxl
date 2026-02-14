@@ -83,6 +83,8 @@ AVAILABLE IMPORTS:
 - styled from "styled-components" (CSS-in-JS)
 - { useReasoning } from "../ctxl/hooks" — delta-driven LLM reasoning hook
 - { useAtom } from "../ctxl/hooks" — subscribe to shared state atoms
+- { useEngagement } from "../ctxl/hooks" — track user interactions for continuous evaluation
+- { usePinned } from "../ctxl/hooks" — state with user intent precedence (reasoning respects pinned values)
 - { AbstractComponent } from "../ctxl/abstract-component" — render child abstract components
 
 USING useReasoning (delta-driven perception):
@@ -102,6 +104,20 @@ USING useReasoning (delta-driven perception):
   // Use a function prompt for access to previous values:
   //   useReasoning((prev, next) => \`Data changed from \${prev[0]} to \${next[0]}\`, [data], opts)
 
+USING useEngagement (continuous evaluation via user interaction tracking):
+  // Automatically feeds into useReasoning's system context — no manual wiring needed
+  const { track, trackOverride, ref } = useEngagement();
+  // track("section-name") — record interaction with a UI section
+  // trackOverride() — record when user overrides model suggestion
+  // ref — attach to root element for automatic click tracking
+
+USING usePinned (user intent precedence):
+  // State the user has explicitly set — reasoning won't override it
+  const [layout, pinLayout, unpinLayout, isLayoutPinned] = usePinned("layout", "grid");
+  // pinLayout("list") — user chooses; reasoning respects this
+  // unpinLayout() — allow reasoning to change it again
+  // Pinned values are included in useReasoning's system context automatically
+
 USING AbstractComponent (for composition / self-decomposition):
   <AbstractComponent
     id="child-id"
@@ -118,10 +134,13 @@ RULES:
 - Destructure inputs from props.inputs, not from props directly
 - Use useState for local UI state, useAtom for shared persistent state
 - Use useReasoning when the component should reason about input changes (not every component needs it)
+- useReasoning returns { status, response, statusText, stale } — use status to show loading/error states
+- When using useReasoning with keepStale: true, check the stale flag to show "updating" indicators over existing content
 - Use props.handlers for implementation callbacks (UI wiring)
 - Be visually polished. Use styled-components for styling.
-- useReasoning returns { status, response, statusText } — use status to show loading/error states
 - Keep the component focused — do one thing well
+- Use useEngagement to track meaningful user interactions when the component has interactive sections
+- Use usePinned for state the user should be able to explicitly control (layout, sort order, preferences)
 
 ${guidelines ? `GUIDELINES:\n${guidelines}\n` : ""}${reauthorBlock}`;
 }

@@ -25,6 +25,7 @@ export interface AtomRegistry {
   idb: IDB | null;
   create<T>(key: string, defaultValue: T): Atom<T>;
   get<T>(key: string): Atom<T> | undefined;
+  keys(): string[];
   hydrate(idb: IDB): Promise<void>;
 }
 
@@ -74,6 +75,10 @@ export function createAtomRegistry(): AtomRegistry {
 
     get<T>(key: string): Atom<T> | undefined {
       return this.atoms.get(key) as Atom<T> | undefined;
+    },
+
+    keys(): string[] {
+      return [...this.atoms.keys()];
     },
 
     /** Load persisted atom values from IDB. */

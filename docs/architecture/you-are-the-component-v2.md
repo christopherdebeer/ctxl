@@ -867,6 +867,26 @@ interface Runtime {
 
 **Milestone:** The system handles edge cases: type-aware shape detection catches more structural changes, freshness tracking detects stale authoring, and the Inspect tab provides full runtime visibility into the component tree, shared state, and mutation history.
 
+### Phase 5: Intelligence & Affordance -- IMPLEMENTED
+
+**Continuous evaluation, user intent precedence, semantic drift detection, latency-aware rendering, and the guidance layer.**
+
+21. **`useEngagement` hook** -- DONE. Continuous evaluation via user interaction tracking. Tracks interactions, dwell time, override rate, and per-section activity. Data stored in `window.__ENGAGEMENT__` and automatically included in `useReasoning`'s system context -- components don't need to manually wire engagement data to the model. The model sees what the user interacts with and can adapt accordingly. ~80 LOC.
+
+22. **`usePinned` hook** -- DONE. User intent precedence for state values. When the user explicitly sets a value via `pin()`, it's marked as user-controlled and included in `useReasoning`'s system context with instructions not to override it. The model sees pinned values and respects them. `unpin()` allows the model to change the value again. Stored in `window.__PINNED__` registry. Resolves the "whose intent wins" question: user always wins for pinned state. ~60 LOC.
+
+23. **Semantic drift detection** -- DONE. Engagement metrics are snapshotted before self-modification. After 30 seconds of post-reshape usage, the system compares override rates. If more than 30% of post-reshape interactions are overrides (user correcting the model), a drift warning is logged and recorded in mutation history. This catches gradual degradation that the error boundary can't detect -- technically valid components that progressively stop serving the user. ~50 LOC.
+
+24. **Latency-aware `useReasoning`** -- DONE. Two additions: (a) `keepStale` option preserves the previous response while new reasoning runs, avoiding the flash-to-null that makes the interface feel broken. Components check the `stale` flag to show "updating" indicators. (b) `priority` shorthand maps to debounce timing -- "eager" (0ms) for immediate interactions, "normal" (300ms) for text input, "background" (1000ms) for low-priority analysis. ~15 LOC.
+
+25. **Affordance / guidance layer** -- DONE. Enhanced root component with meaningful invitations on first visit ("Let's make a tool", "Get something done", "Explore", "Learn something") instead of a blank input field. Added `set_objective` tool for persisting the user's chosen path. Guidelines direct the authoring LLM to create structure (proposed tasks, suggested data elements) rather than a chat interface. The root distinguishes first visit vs. returning visit via atom persistence.
+
+26. **Evaluation context in prompts** -- DONE. Authoring prompt now documents `useEngagement` and `usePinned` as available imports alongside `useReasoning` and `useAtom`. Rules updated to guide the authoring LLM on when to use engagement tracking and pinned state. `buildSystemContext` includes engagement metrics and pinned values automatically.
+
+27. **AtomRegistry.keys()** -- DONE. Added `keys(): string[]` method to the AtomRegistry interface and implementation. Previously, the introspection tools in hooks.ts that listed atoms would silently fail because the method didn't exist. Now atom listing works correctly in both reasoning context and inspection tools.
+
+**Milestone:** The system has continuous evaluation (engagement tracking), user intent precedence (pinned state), semantic drift detection (override rate monitoring), latency-aware rendering (keepStale + priority), and a guidance layer (affordance invitations). The gap between "developer demo" and "usable tool" has narrowed.
+
 ---
 
 ## 16. Architecture After v1 Removal
@@ -884,8 +904,8 @@ The codebase is now v2-canonical. No v1 code remains. The full system:
 - **atoms.ts** -- scoped external state with IDB persistence
 
 **VFS seeds** (real .ts/.tsx files under `src/seeds/`, imported via Vite's `?raw` suffix, compiled in-browser by esbuild):
-- **seeds/ctxl/hooks.ts** -- `useReasoning` (delta-driven perception + multi-turn agent loop + ToolContext integration + inspection context) + `useAtom` (shared state) + `ToolContext` (React Context for parent tool injection)
-- **seeds/ctxl/abstract-component.tsx** -- identity resolution, ToolContext.Provider, tool-based authoring (`write_component`), handlers prop forwarding, mutation history, error boundary + rollback, authoring queue, shape change detection (inputs + tools + handlers), freshness tracking
+- **seeds/ctxl/hooks.ts** -- `useReasoning` (delta-driven perception + multi-turn agent loop + ToolContext integration + inspection context + keepStale + priority) + `useAtom` (shared state) + `useEngagement` (continuous evaluation) + `usePinned` (user intent precedence) + `ToolContext` (React Context for parent tool injection)
+- **seeds/ctxl/abstract-component.tsx** -- identity resolution, ToolContext.Provider, tool-based authoring (`write_component`), handlers prop forwarding, mutation history, error boundary + rollback, authoring queue, shape change detection (inputs + tools + handlers), freshness tracking, semantic drift detection
 - **seeds/main.tsx** -- renders root `<AbstractComponent>`
 - **seeds/ac/_registry.ts** -- auto-generated component registry
 
