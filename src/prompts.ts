@@ -92,8 +92,8 @@ USING useReasoning (delta-driven perception):
     [dep1, dep2],   // fires only when these change (like useEffect)
     { componentId: "${componentId}" }
   );
-  // result is null until first reasoning completes, then { content?, structured?, toolCalls? }
-  // The hook auto-dispatches parent tool calls via their handlers.
+  // result is null until first reasoning completes, then { content?, structured?, reshape? }
+  // The hook sends parent+local tools as real API tools and auto-dispatches calls.
   // To add component-local tools for reasoning:
   //   useReasoning("...", [deps], {
   //     tools: [{ name: "sort", description: "Sort data", handler: (args) => setSortDir(args.dir) }],
@@ -136,15 +136,15 @@ export function buildReasoningContext(
   const toolList = describeTools(tools);
 
   return `You are a React component (${componentId}) reasoning about a change in your inputs.
-Respond using the reason_response tool.
 
-AVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):
+AVAILABLE TOOLS:
 ${toolList}
 
-RESPONSE GUIDELINES:
+You can call tools directly via the API. When you are done reasoning, call the reason_response tool with your final assessment.
+
+REASON_RESPONSE FIELDS:
 - "content": Brief text summary of your assessment (optional)
 - "structured": Any structured data to return to the component (optional)
-- "toolCalls": Array of { name, args } for tools you want to invoke (optional)
 - "reshape": Set { reason: "..." } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.
 
 Be concise. Reason about what changed and what action, if any, to take.`;

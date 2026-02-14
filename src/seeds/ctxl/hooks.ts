@@ -115,7 +115,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     }
   } catch {}
 
-  return "You are a React component (" + id + ") reasoning about a change in your inputs.\nRespond using the reason_response tool.\n\nAVAILABLE TOOLS YOU CAN INVOKE (return in toolCalls array):\n" + toolLines + inspectionBlock + "\n\nRESPONSE GUIDELINES:\n- \"content\": Brief text summary of your assessment (optional)\n- \"structured\": Any structured data to return to the component (optional)\n- \"toolCalls\": Array of { name, args } for tools you want to invoke (optional)\n- \"reshape\": Set { reason: \"...\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\n\nBe concise. Reason about what changed and what action, if any, to take.";
+  return "You are a React component (" + id + ") reasoning about a change in your inputs.\n\nAVAILABLE TOOLS:\n" + toolLines + inspectionBlock + "\n\nYou can call tools directly via the API. When you are done reasoning, call the reason_response tool with your final assessment.\n\nREASON_RESPONSE FIELDS:\n- \"content\": Brief text summary of your assessment (optional)\n- \"structured\": Any structured data to return to the component (optional)\n- \"reshape\": Set { reason: \"...\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\n\nBe concise. Reason about what changed and what action, if any, to take.";
 }
 
 // ---- useReasoning ----
@@ -239,27 +239,15 @@ export function useReasoning(
           return undefined;
         };
 
-        // Build the reason_response tool for structured output
+        // Build the reason_response tool (terminal signal — "I'm done reasoning")
         const reasonTool = {
           name: "reason_response",
-          description: "Return your reasoning result",
+          description: "Return your final reasoning result. Call this when you are done.",
           input_schema: {
             type: "object",
             properties: {
               content: { type: "string", description: "Brief assessment" },
               structured: { type: "object", description: "Structured data", additionalProperties: true },
-              toolCalls: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string" },
-                    args: { type: "object", additionalProperties: true },
-                  },
-                  required: ["name"],
-                },
-                description: "Tools to invoke",
-              },
               reshape: {
                 type: "object",
                 properties: { reason: { type: "string" } },
@@ -269,17 +257,36 @@ export function useReasoning(
           },
         };
 
+        // Convert ToolDef[] → Anthropic API tool format
+        const toAPITool = (t: ToolDef) => {
+          const properties: Record<string, any> = {};
+          if (t.schema) {
+            for (const [key, type] of Object.entries(t.schema)) {
+              properties[key] = { type };
+            }
+          }
+          return {
+            name: t.name,
+            description: t.description,
+            input_schema: { type: "object" as const, properties },
+          };
+        };
+
+        // All tools sent as real Anthropic API tools
+        const apiTools = [reasonTool, ...allTools.map(toAPITool)];
+
         // Build system context from merged tools
         const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
 
         const conversationMessages: any[] = [{ role: "user", content: resolvedPrompt }];
         const extras = {
-          tools: [reasonTool],
-          tool_choice: { type: "tool", name: "reason_response" },
+          tools: apiTools,
+          tool_choice: { type: "auto" as const },
           _source: "reasoning:" + (componentId || "anonymous"),
         };
 
-        // Multi-turn agent loop: dispatch tools, feed results back, let agent continue
+        // Multi-turn agent loop: LLM calls tools directly via API,
+        // reason_response is the terminal "I'm done" signal.
         let latestResult: ReasoningResult | null = null;
 
         for (let turn = 0; turn < maxTurns; turn++) {
@@ -293,68 +300,69 @@ export function useReasoning(
           }
 
           const data = response.data;
-          const toolBlock = data?.content?.find(
+          const contentBlocks = data?.content || [];
+
+          // Check for reason_response — terminal signal
+          const reasonBlock = contentBlocks.find(
             (b: any) => b.type === "tool_use" && b.name === "reason_response"
           );
 
-          if (!toolBlock?.input) {
-            // Fallback: extract text
-            const text = data?.content?.find((b: any) => b.type === "text")?.text || "";
-            latestResult = { content: text };
-            break;
-          }
+          if (reasonBlock?.input) {
+            const r: ReasoningResult = reasonBlock.input;
+            latestResult = r;
 
-          const r: ReasoningResult = toolBlock.input;
-          latestResult = r;
-
-          // Check for reshape (via reshape field OR __reshape in toolCalls)
-          const reshapeInToolCalls = r.toolCalls && r.toolCalls.some((tc: any) => tc.name === "__reshape");
-          const hasReshape = r.reshape || reshapeInToolCalls;
-
-          if (hasReshape) {
-            // Dispatch all tool calls including any __reshape, then stop
-            if (r.toolCalls) {
-              for (const tc of r.toolCalls) { dispatchTool(tc.name, tc.args); }
-            }
-            // Auto-dispatch reshape field if __reshape wasn't already in toolCalls
-            if (r.reshape && !reshapeInToolCalls) {
+            // Handle reshape
+            if (r.reshape) {
               dispatchTool("__reshape", r.reshape);
             }
             break;
           }
 
-          // If no tool calls, we're done
-          if (!r.toolCalls || r.toolCalls.length === 0) break;
+          // Collect all non-reason_response tool_use blocks
+          const toolUseBlocks = contentBlocks.filter(
+            (b: any) => b.type === "tool_use" && b.name !== "reason_response"
+          );
 
-          // Last allowed turn — dispatch tool calls but don't loop back
-          if (turn >= maxTurns - 1) {
-            for (const tc of r.toolCalls) { dispatchTool(tc.name, tc.args); }
+          if (toolUseBlocks.length === 0) {
+            // No tools called — extract text as fallback
+            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
+            latestResult = { content: text };
             break;
           }
 
-          // Dispatch tool calls and collect results for follow-up
-          const toolResults: string[] = [];
-          for (const tc of r.toolCalls) {
+          // Last allowed turn — dispatch tools but don't loop back
+          if (turn >= maxTurns - 1) {
+            for (const tb of toolUseBlocks) {
+              dispatchTool(tb.name, tb.input);
+            }
+            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
+            latestResult = { content: text || "Max turns reached" };
+            break;
+          }
+
+          // Dispatch each tool and collect results as tool_result blocks
+          const toolResultBlocks: any[] = [];
+          for (const tb of toolUseBlocks) {
             try {
-              const res = await Promise.resolve(dispatchTool(tc.name, tc.args));
-              toolResults.push(tc.name + ": " + (res !== undefined ? (typeof res === "string" ? res : JSON.stringify(res)) : "done"));
+              const res = await Promise.resolve(dispatchTool(tb.name, tb.input));
+              toolResultBlocks.push({
+                type: "tool_result",
+                tool_use_id: tb.id,
+                content: res !== undefined ? (typeof res === "string" ? res : JSON.stringify(res)) : "done",
+              });
             } catch (e: any) {
-              toolResults.push(tc.name + ": error — " + (e.message || String(e)));
+              toolResultBlocks.push({
+                type: "tool_result",
+                tool_use_id: tb.id,
+                content: "Error: " + (e.message || String(e)),
+                is_error: true,
+              });
             }
           }
 
-          // Feed tool results back to LLM for next turn
-          conversationMessages.push({ role: "assistant", content: data.content });
-          conversationMessages.push({
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: toolBlock.id,
-                content: "Tool results:\n" + toolResults.join("\n") + "\n\nContinue reasoning. If further action is needed, invoke more tools or request reshape. Otherwise return your assessment.",
-              },
-            ],
-          });
+          // Feed results back following Anthropic API conversation structure
+          conversationMessages.push({ role: "assistant", content: contentBlocks });
+          conversationMessages.push({ role: "user", content: toolResultBlocks });
         }
 
         if (latestResult) setResult(latestResult);
