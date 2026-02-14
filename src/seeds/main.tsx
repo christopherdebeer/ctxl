@@ -29,11 +29,6 @@ const el = document.getElementById("root")!;
 const root = (window.__RUNTIME__.root ??= createRoot(el));
 
 if (!window.__RUNTIME__._mounted) {
-  // Read objective from atoms or use default
-  const atoms = window.__ATOMS__;
-  const objectiveAtom = atoms?.get("objective");
-  const objective = objectiveAtom?.get() || "What would you like to build?";
-
   // Wrap the tree in RuntimeContext.Provider — dogfooding the same context
   // that library consumers use via <CtxlProvider>.
   const runtimeCtx = { runtime: window.__RUNTIME__, atoms: window.__ATOMS__ };
@@ -42,11 +37,67 @@ if (!window.__RUNTIME__._mounted) {
     React.createElement(RuntimeContext.Provider, { value: runtimeCtx },
       React.createElement(AbstractComponent, {
         id: "root",
-        inputs: { objective },
+        inputs: {},
         tools: [
-          { name: "report", description: "Report status to the system", handler: (args: any) => { console.log("[root] report:", args); return "reported"; } },
+          {
+            name: "set_objective",
+            description: "Set the user's chosen objective via reasoning. Persists across sessions.",
+            schema: { objective: "string" },
+            handler: (args: any) => {
+              const atoms = window.__ATOMS__;
+              const atom = atoms?.create("objective", "");
+              atom?.set(args.objective);
+              return "Objective set: " + args.objective;
+            },
+          },
+          {
+            name: "report",
+            description: "Report status or observations to the system",
+            schema: { message: "string" },
+            handler: (args: any) => { console.log("[root] report:", args); return "reported"; },
+          },
         ],
-        guidelines: "You are the root component. Present a clean interface for the user to describe what they want to build. Decompose objectives into child AbstractComponents when appropriate. Be welcoming and visually polished.",
+        handlers: {
+          setObjective: {
+            description: "Set the user's objective directly (called from UI interactions like button clicks). Persists to atoms.",
+            fn: (objective: string) => {
+              const atoms = window.__ATOMS__;
+              const atom = atoms?.create("objective", "");
+              atom?.set(objective);
+            },
+          },
+        },
+        guidelines: `You are the root component of ctxl — a tool for making tools.
+
+REACTIVE STATE:
+Use useAtom("objective", "") to subscribe to the objective. This is LIVE — it updates when the user sets an objective.
+Do NOT rely on props.inputs for the objective — it's static. Use useAtom for reactive state.
+
+FIRST VISIT (objective is empty):
+Present meaningful invitations — not a blank input field or chat box. Offer starting points:
+- "Make a tool" — help the user build something useful
+- "Get something done" — focus on a specific task
+- "Explore" — open-ended discovery
+- "Learn something" — guided exploration through building
+
+When the user clicks an invitation or submits custom text, call props.handlers.setObjective(text) DIRECTLY.
+This is a handler, not a reasoning tool — it fires immediately without LLM latency.
+Example: onClick={() => props.handlers.setObjective("I want to make a tool for tracking habits")}
+
+RETURNING VISIT (objective is non-empty):
+Show the objective and decompose into a workspace with child AbstractComponents.
+Let the user change the objective if needed (call props.handlers.setObjective with the new value).
+
+DESIGN PRINCIPLES:
+- Use useAtom("objective", "") for reactive objective state — this is the source of truth
+- Call props.handlers.setObjective(text) for immediate UI actions (button clicks, form submits)
+- The set_objective tool is for reasoning-initiated changes — the handler is for direct user actions
+- Use useReasoning for ongoing adaptation (what to show, how to decompose the workspace)
+- Decompose into child AbstractComponents — don't try to do everything in the root
+- Use styled-components for a dark, minimal aesthetic
+- Be welcoming without being cloying. Direct, not chatty.
+- Include a text input for custom objectives
+- Use useEngagement to track which sections the user interacts with`,
         fallback: React.createElement("div", {
           style: {
             display: "flex", alignItems: "center", justifyContent: "center",

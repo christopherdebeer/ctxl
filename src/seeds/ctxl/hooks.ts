@@ -30,6 +30,10 @@ interface UseReasoningOptions<T = { content: string }> {
   debounceMs?: number;
   componentId?: string;
   maxTurns?: number;
+  /** Keep previous response visible while new reasoning runs (avoids flash to null). */
+  keepStale?: boolean;
+  /** Debounce timing shorthand: "eager" (0ms), "normal" (300ms), "background" (1000ms). */
+  priority?: "eager" | "normal" | "background";
 }
 
 interface UseReasoningReturn<T = { content: string }> {
@@ -39,6 +43,8 @@ interface UseReasoningReturn<T = { content: string }> {
   turn: number;
   maxTurns: number;
   statusText: string | null;
+  /** True when showing a previous response while new reasoning is in progress. */
+  stale: boolean;
 }
 
 // ---- Runtime Context ----
@@ -154,17 +160,60 @@ function buildSystemContext(
     }
   } catch {}
 
+  // Engagement context — continuous evaluation signals from user interaction
+  let engagementBlock = "";
+  try {
+    const engagement = (window as any).__ENGAGEMENT__;
+    if (engagement && engagement[id]) {
+      const m = engagement[id];
+      const activeSections = Object.entries(m.sectionHits || {})
+        .filter(function(e) { return (e[1] as number) > 0; })
+        .sort(function(a, b) { return (b[1] as number) - (a[1] as number); })
+        .slice(0, 5);
+      const sectionStr = activeSections.length > 0
+        ? activeSections.map(function(e) { return e[0] + ": " + e[1] + " interactions"; }).join(", ")
+        : "none tracked";
+      const idleMs = m.lastInteraction > 0 ? Date.now() - m.lastInteraction : -1;
+      engagementBlock = "\n\nUSER ENGAGEMENT (continuous evaluation):" +
+        "\n  Interactions: " + m.interactions +
+        "\n  User overrides: " + m.overrides +
+        "\n  Dwell time: " + Math.round((m.dwellTimeMs || 0) / 1000) + "s" +
+        "\n  Active sections: " + sectionStr +
+        (idleMs > 0 ? "\n  Idle for: " + Math.round(idleMs / 1000) + "s" : "");
+    }
+  } catch {}
+
+  // Pinned state — values explicitly set by the user that should not be overridden
+  let pinnedBlock = "";
+  try {
+    const pinned = (window as any).__PINNED__;
+    if (pinned && pinned[id]) {
+      const entries = Object.entries(pinned[id]);
+      if (entries.length > 0) {
+        const pinnedStr = entries.map(function(e) {
+          var val = (e[1] as any).value;
+          return "  " + e[0] + ": " + JSON.stringify(val);
+        }).join("\n");
+        pinnedBlock = "\n\nPINNED STATE (user-controlled — do NOT override these values):\n" + pinnedStr;
+      }
+    }
+  } catch {}
+
   return "You are a React component (" + id + ") reasoning about a change in your inputs. Your render output is your body — your expression to the world. You reason about input changes and take action through tools." +
     sourceBlock +
     "\n\nAVAILABLE TOOLS:\n" + toolLines.join("\n") +
     inspectionBlock +
+    engagementBlock +
+    pinnedBlock +
     "\n\nINSTRUCTIONS:" +
     "\n- Examine the input values and reason about what changed and what action to take." +
     "\n- Call respond to provide your output to the component. You can call respond alongside other tools in the same turn." +
     "\n- Use introspection tools (read_atom, list_components, etc.) to investigate your environment on demand." +
     "\n- __reshape is TERMINAL — it replaces your source code entirely. Only use when your current implementation is fundamentally insufficient." +
     "\n- The reasoning loop ends when you stop calling tools. You do not need a special signal to finish — simply produce a text-only response when done." +
-    "\n- Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems.";
+    "\n- Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems." +
+    "\n- If PINNED STATE is shown, those values were explicitly set by the user. Respect them — do not override unless the user requests a change." +
+    "\n- If USER ENGAGEMENT shows low interaction or high overrides, consider whether your output is serving the user well. Adapt accordingly.";
 }
 
 // ---- useReasoning ----
@@ -200,6 +249,7 @@ export function useReasoning<T = { content: string }>(
     turn: 0,
     maxTurns: resolvedMaxTurns,
     statusText: null,
+    stale: false,
   });
   const prevDepsRef = useRef<any[] | null>(null);
   const fireCountRef = useRef(0);
@@ -252,9 +302,14 @@ export function useReasoning<T = { content: string }>(
 
       fireCountRef.current++;
 
-      const { tools: localTools = [], onToolCall: localOnToolCall, componentId: optComponentId, maxTurns = 3, responseSchema } = optionsRef.current;
+      const { tools: localTools = [], onToolCall: localOnToolCall, componentId: optComponentId, maxTurns = 3, responseSchema, keepStale } = optionsRef.current;
 
-      update({ status: "reasoning", response: null, error: null, turn: 0, maxTurns, statusText: "Thinking..." });
+      // When keepStale is true, preserve the previous response (marked stale) instead of flashing to null
+      if (keepStale && state.response) {
+        update({ status: "reasoning", error: null, turn: 0, maxTurns, statusText: "Thinking...", stale: true });
+      } else {
+        update({ status: "reasoning", response: null, error: null, turn: 0, maxTurns, statusText: "Thinking...", stale: false });
+      }
 
       try {
         const config = runtime.config;
@@ -435,11 +490,17 @@ export function useReasoning<T = { content: string }>(
         ];
 
         // Convert ToolDef[] → Anthropic API tool format
+        const validSchemaTypes = ["string", "number", "integer", "boolean", "array", "object", "null"];
         const toAPITool = (t: ToolDef) => {
           const properties: Record<string, any> = {};
           if (t.schema) {
-            for (const [key, type] of Object.entries(t.schema)) {
-              properties[key] = { type };
+            for (const [key, typeHint] of Object.entries(t.schema)) {
+              if (validSchemaTypes.indexOf(typeHint) >= 0) {
+                properties[key] = { type: typeHint };
+              } else {
+                // Non-standard type hint (e.g. "'table' | 'chart'") — use string with description
+                properties[key] = { type: "string", description: typeHint };
+              }
             }
           }
           return {
@@ -581,16 +642,18 @@ export function useReasoning<T = { content: string }>(
           conversationMessages.push({ role: "user", content: toolResultBlocks });
         }
 
-        update({ status: "done", response: latestResponse, statusText: null });
+        update({ status: "done", response: latestResponse, statusText: null, stale: false });
       } catch (err: any) {
         if (mountedRef.current) {
-          update({ status: "error", error: "Reasoning error: " + (err.message || String(err)), statusText: null });
+          update({ status: "error", error: "Reasoning error: " + (err.message || String(err)), statusText: null, stale: false });
         }
       }
     };
 
-    // Debounce — default 300ms so text-input-driven deps don't fire per-keystroke
-    const delay = optionsRef.current.debounceMs ?? 300;
+    // Debounce — priority shorthand or explicit debounceMs
+    const priorityMap: Record<string, number> = { eager: 0, normal: 300, background: 1000 };
+    const priority = optionsRef.current.priority;
+    const delay = optionsRef.current.debounceMs ?? (priority ? priorityMap[priority] ?? 300 : 300);
     if (delay > 0) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(doReason, delay);
@@ -636,4 +699,187 @@ export function useAtom<T = any>(key: string, defaultValue?: T): [T, (v: T | ((p
   }, [atom]);
 
   return [value as T, setValue];
+}
+
+// ---- Engagement Registry ----
+// Continuous evaluation via user interaction signals.
+// Data is stored in a global registry and automatically included in
+// useReasoning's system context — components don't need to wire it manually.
+
+interface EngagementMetrics {
+  interactions: number;
+  lastInteraction: number;
+  dwellTimeMs: number;
+  overrides: number;
+  sectionHits: Record<string, number>;
+  sessionStart: number;
+}
+
+if (!(window as any).__ENGAGEMENT__) (window as any).__ENGAGEMENT__ = {} as Record<string, EngagementMetrics>;
+
+function getOrCreateEngagement(componentId: string): EngagementMetrics {
+  const reg = (window as any).__ENGAGEMENT__;
+  if (!reg[componentId]) {
+    reg[componentId] = {
+      interactions: 0,
+      lastInteraction: 0,
+      dwellTimeMs: 0,
+      overrides: 0,
+      sectionHits: {},
+      sessionStart: Date.now(),
+    };
+  }
+  return reg[componentId];
+}
+
+/**
+ * Track user engagement with a component for continuous evaluation.
+ *
+ * Engagement data flows automatically into useReasoning's system context —
+ * the model sees interaction counts, dwell time, overrides, and section
+ * activity without manual wiring.
+ *
+ * Usage:
+ *   const { track, trackOverride, ref } = useEngagement();
+ *   return (
+ *     <div ref={ref}>
+ *       <button onClick={() => { track("filters"); doThing(); }}>Filter</button>
+ *     </div>
+ *   );
+ */
+export function useEngagement(componentId?: string): {
+  metrics: EngagementMetrics;
+  track: (section?: string) => void;
+  trackOverride: () => void;
+  ref: { current: HTMLElement | null };
+} {
+  const ctx = useContext(ToolContext);
+  const id = componentId || ctx?.componentId || "anonymous";
+  const metricsRef = useRef(getOrCreateEngagement(id));
+  const mountTimeRef = useRef(Date.now());
+  const elRef = useRef<HTMLElement | null>(null);
+
+  // Track dwell time while mounted
+  useEffect(function() {
+    var startTime = Date.now();
+    return function() {
+      metricsRef.current.dwellTimeMs += Date.now() - startTime;
+    };
+  }, []);
+
+  // Auto-track clicks on the ref element
+  useEffect(function() {
+    var el = elRef.current;
+    if (!el) return;
+    var handler = function() {
+      metricsRef.current.interactions++;
+      metricsRef.current.lastInteraction = Date.now();
+    };
+    el.addEventListener("click", handler);
+    return function() { el.removeEventListener("click", handler); };
+  }, []);
+
+  var track = useCallback(function(section?: string) {
+    var m = metricsRef.current;
+    m.interactions++;
+    m.lastInteraction = Date.now();
+    if (section) {
+      m.sectionHits[section] = (m.sectionHits[section] || 0) + 1;
+    }
+  }, []);
+
+  var trackOverride = useCallback(function() {
+    metricsRef.current.overrides++;
+    metricsRef.current.lastInteraction = Date.now();
+  }, []);
+
+  return { metrics: metricsRef.current, track: track, trackOverride: trackOverride, ref: elRef };
+}
+
+// ---- Pinned State Registry ----
+// State marked as "pinned" by the user is included in useReasoning's
+// system context with explicit instructions not to override it.
+// This resolves the "whose intent wins" question: user-controlled state
+// takes precedence over model reasoning.
+
+interface PinnedEntry {
+  value: any;
+  timestamp: number;
+}
+
+if (!(window as any).__PINNED__) (window as any).__PINNED__ = {} as Record<string, Record<string, PinnedEntry>>;
+
+function getPinnedForComponent(componentId: string): Record<string, PinnedEntry> {
+  var reg = (window as any).__PINNED__;
+  if (!reg[componentId]) reg[componentId] = {};
+  return reg[componentId];
+}
+
+/**
+ * State with user intent precedence.
+ *
+ * When the user explicitly sets a value via `pin()`, it's marked as
+ * "user-controlled" and included in useReasoning's system context so the
+ * model knows not to override it.
+ *
+ * Usage:
+ *   const [layout, pin, unpin, isPinned] = usePinned("layout", "grid");
+ *   // User changes layout:
+ *   pin("list");  // now pinned — reasoning won't override
+ *   // To allow model to change it again:
+ *   unpin();
+ *
+ * @returns [value, pin, unpin, isPinned]
+ */
+export function usePinned<T = any>(
+  key: string,
+  defaultValue: T,
+  componentId?: string,
+): [T, (value: T) => void, () => void, boolean] {
+  var ctx = useContext(ToolContext);
+  var id = componentId || ctx?.componentId || "anonymous";
+  var [value, setValueRaw] = useState<T>(defaultValue);
+  var [isPinned, setIsPinned] = useState(false);
+
+  // Initialize from pinned registry on mount
+  useEffect(function() {
+    var pinned = getPinnedForComponent(id);
+    if (pinned[key]) {
+      setValueRaw(pinned[key].value as T);
+      setIsPinned(true);
+    }
+  }, [id, key]);
+
+  // Pin: set value and mark as user-controlled
+  var pin = useCallback(function(newValue: T) {
+    setValueRaw(newValue);
+    setIsPinned(true);
+    getPinnedForComponent(id)[key] = { value: newValue, timestamp: Date.now() };
+  }, [id, key]);
+
+  // Unpin: allow reasoning to change the value again
+  var unpin = useCallback(function() {
+    setIsPinned(false);
+    delete getPinnedForComponent(id)[key];
+  }, [id, key]);
+
+  return [value, pin, unpin, isPinned];
+}
+
+/**
+ * Snapshot engagement metrics for a component at a point in time.
+ * Used by AbstractComponent's drift detection to compare before/after reshape.
+ */
+export function snapshotEngagement(componentId: string): EngagementMetrics | null {
+  var reg = (window as any).__ENGAGEMENT__;
+  if (!reg || !reg[componentId]) return null;
+  var m = reg[componentId];
+  return {
+    interactions: m.interactions,
+    lastInteraction: m.lastInteraction,
+    dwellTimeMs: m.dwellTimeMs,
+    overrides: m.overrides,
+    sectionHits: { ...m.sectionHits },
+    sessionStart: m.sessionStart,
+  };
 }

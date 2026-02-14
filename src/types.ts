@@ -141,6 +141,17 @@ export interface HandlerDef {
   fn: (...args: any[]) => any;
 }
 
+// ---- Engagement (continuous evaluation) ----
+
+export interface EngagementMetrics {
+  interactions: number;
+  lastInteraction: number;
+  dwellTimeMs: number;
+  overrides: number;
+  sectionHits: Record<string, number>;
+  sessionStart: number;
+}
+
 // ---- Reasoning ----
 
 export interface UseReasoningReturn<T = { content: string }> {
@@ -150,6 +161,7 @@ export interface UseReasoningReturn<T = { content: string }> {
   turn: number;
   maxTurns: number;
   statusText: string | null;
+  stale: boolean;
 }
 
 /** @deprecated Use UseReasoningReturn instead */

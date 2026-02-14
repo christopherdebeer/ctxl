@@ -13,9 +13,15 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
 import type { ReactNode } from "react";
-import { ToolContext, useRuntimeContext } from "./hooks";
+import { ToolContext, useRuntimeContext, snapshotEngagement } from "./hooks";
 
 // ---- Mutation History ----
+
+interface EngagementSnapshot {
+  interactions: number;
+  overrides: number;
+  dwellTimeMs: number;
+}
 
 interface MutationEntry {
   id: string;
@@ -25,6 +31,8 @@ interface MutationEntry {
   previousSource: string;
   newSource: string;
   outcome: "swap" | "remount" | "crash-recovery" | "rollback";
+  /** Engagement at time of mutation — used for drift detection. */
+  engagementBefore?: EngagementSnapshot | null;
 }
 
 function getMutationHistory(): MutationEntry[] {
@@ -175,6 +183,61 @@ function resetReshapeCounter(componentId: string): void {
   reshapeCounters[componentId] = { count: 0, since: Date.now() };
 }
 
+// ---- Semantic Drift Detection ----
+// Compares engagement metrics before and after a self-modification to detect
+// gradual degradation. If override rate increases significantly after reshape,
+// the component may be drifting away from user intent.
+
+const DRIFT_CHECK_DELAY = 30000; // Check 30s after reshape to allow usage
+const driftTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+function scheduleDriftCheck(componentId: string): void {
+  if (driftTimers[componentId]) clearTimeout(driftTimers[componentId]);
+  driftTimers[componentId] = setTimeout(function() {
+    checkForDrift(componentId);
+    delete driftTimers[componentId];
+  }, DRIFT_CHECK_DELAY);
+}
+
+function checkForDrift(componentId: string): void {
+  const history = getMutationHistory();
+  // Find the most recent reshape mutation with engagement data
+  let lastReshape: MutationEntry | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].componentId === componentId && history[i].engagementBefore) {
+      lastReshape = history[i];
+      break;
+    }
+  }
+  if (!lastReshape || !lastReshape.engagementBefore) return;
+
+  const before = lastReshape.engagementBefore;
+  const current = snapshotEngagement(componentId);
+  if (!current) return;
+
+  // Calculate delta since reshape
+  const deltaInteractions = current.interactions - before.interactions;
+  const deltaOverrides = current.overrides - before.overrides;
+
+  // Drift signal: override rate increased significantly after reshape
+  // (more than 30% of post-reshape interactions are overrides)
+  if (deltaInteractions > 5 && deltaOverrides / deltaInteractions > 0.3) {
+    console.warn(
+      "[AC:" + componentId + "] Semantic drift detected: " +
+      deltaOverrides + "/" + deltaInteractions + " interactions are overrides since last reshape. " +
+      "Consider rolling back or revising guidelines."
+    );
+    // Record drift observation in mutation history
+    recordMutation({
+      componentId: componentId,
+      trigger: "drift-detected:override-rate-" + Math.round(deltaOverrides / deltaInteractions * 100) + "%",
+      previousSource: "",
+      newSource: "",
+      outcome: "swap", // observation, not an actual source change
+    });
+  }
+}
+
 // ---- AbstractComponent ----
 
 export function AbstractComponent({
@@ -237,6 +300,8 @@ export function AbstractComponent({
   const reshape = useCallback((reason: string) => {
     trackReshape(id);
     const runtime = ctxRuntime;
+    // Snapshot engagement before reshape for drift detection
+    const engBefore = snapshotEngagement(id);
     if (runtime) {
       const vfsPath = "/src/ac/" + id + ".tsx";
       const currentSource = runtime.files.get(vfsPath) || "";
@@ -247,6 +312,11 @@ export function AbstractComponent({
           previousSource: currentSource,
           newSource: "",
           outcome: "swap",
+          engagementBefore: engBefore ? {
+            interactions: engBefore.interactions,
+            overrides: engBefore.overrides,
+            dwellTimeMs: engBefore.dwellTimeMs,
+          } : null,
         });
       }
     }
@@ -377,6 +447,8 @@ export function AbstractComponent({
 
         shapeRef.current = { inputs: currentInputShape, tools: currentToolShape, handlers: currentHandlerShape };
         resetReshapeCounter(id);
+        // Schedule drift check if this was a reshape (not first-mount)
+        if (isReauthor) scheduleDriftCheck(id);
         setPhase("ready");
       } catch (err: any) {
         setPhase("error");
