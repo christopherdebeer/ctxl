@@ -143,12 +143,17 @@ export interface HandlerDef {
 
 // ---- Reasoning ----
 
-export interface ReasoningResult {
-  content?: string;
-  structured?: any;
-  toolCalls?: Array<{ name: string; args: any }>;
-  reshape?: { reason: string };
+export interface UseReasoningReturn<T = { content: string }> {
+  status: "idle" | "reasoning" | "done" | "error";
+  response: T | null;
+  error: string | null;
+  turn: number;
+  maxTurns: number;
+  statusText: string | null;
 }
+
+/** @deprecated Use UseReasoningReturn instead */
+export type ReasoningResult = UseReasoningReturn;
 
 // ---- Mutations ----
 

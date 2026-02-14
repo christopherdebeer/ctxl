@@ -22,19 +22,23 @@ interface ToolDef {
   handler?: (args: any) => any;
 }
 
-interface ReasoningResult {
-  content?: string;
-  structured?: any;
-  toolCalls?: Array<{ name: string; args: any }>;
-  reshape?: { reason: string };
-}
-
-interface ReasoningOptions {
+interface UseReasoningOptions<T = { content: string }> {
+  /** JSON Schema for the respond tool — defines the shape the agent must produce. */
+  responseSchema?: Record<string, any>;
   tools?: ToolDef[];
   onToolCall?: (name: string, args: any) => any;
   debounceMs?: number;
   componentId?: string;
   maxTurns?: number;
+}
+
+interface UseReasoningReturn<T = { content: string }> {
+  status: "idle" | "reasoning" | "done" | "error";
+  response: T | null;
+  error: string | null;
+  turn: number;
+  maxTurns: number;
+  statusText: string | null;
 }
 
 // ---- Runtime Context ----
@@ -78,7 +82,12 @@ export const ToolContext = createContext<ToolContextValue | null>(null);
 
 // ---- Build system context from tools ----
 
-function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?: RuntimeContextValue | null): string {
+function buildSystemContext(
+  tools: ToolDef[],
+  componentId?: string,
+  runtimeCtx?: RuntimeContextValue | null,
+  responseSchema?: Record<string, any>,
+): string {
   const id = componentId || "anonymous";
 
   // Tool descriptions (text context for the LLM alongside real API tools)
@@ -90,16 +99,22 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     }
     return line;
   });
-  // Built-in tools always available (even if not in parent/local tools)
-  toolLines.push("- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string })");
+
+  // Built-in tools always available
+  if (responseSchema && responseSchema.properties) {
+    const fields = Object.keys(responseSchema.properties).join(", ");
+    toolLines.push("- respond: Provide your response to the component (fields: " + fields + ")");
+  } else {
+    toolLines.push("- respond: Provide your response to the component (args: { content: string })");
+  }
+  toolLines.push("- __reshape: Rewrite your own source code (args: { reason: string }). TERMINAL — your component will be replaced.");
   toolLines.push("- read_atom: Read the full value of a shared state atom (args: { key: string })");
   toolLines.push("- write_atom: Write a value to a shared state atom (args: { key: string, value: any })");
   toolLines.push("- read_component_source: Read source code of any authored component (args: { id: string })");
   toolLines.push("- list_components: List all authored component IDs");
   toolLines.push("- list_atoms: List all shared state atom keys with value summaries");
 
-  // Component source for self-awareness — the agent needs to know its current form
-  // to decide whether reshaping is needed
+  // Component source for self-awareness
   let sourceBlock = "";
   try {
     const runtime = runtimeCtx?.runtime;
@@ -113,7 +128,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     }
   } catch {}
 
-  // Inspection context: atom state + sibling components (on-demand visibility)
+  // Inspection context: atom state + sibling components (summaries for awareness)
   let inspectionBlock = "";
   try {
     const atoms = runtimeCtx?.atoms || (window as any).__ATOMS__;
@@ -145,9 +160,10 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     inspectionBlock +
     "\n\nINSTRUCTIONS:" +
     "\n- Examine the input values and reason about what changed and what action to take." +
-    "\n- Call tools to take action. Use __reshape when your current source cannot handle what's needed." +
-    "\n- When done, call reason_response with your final assessment." +
-    "\n- reason_response fields: content (brief text summary), structured (any data for the component), reshape ({ reason } to request source rewrite)." +
+    "\n- Call respond to provide your output to the component. You can call respond alongside other tools in the same turn." +
+    "\n- Use introspection tools (read_atom, list_components, etc.) to investigate your environment on demand." +
+    "\n- __reshape is TERMINAL — it replaces your source code entirely. Only use when your current implementation is fundamentally insufficient." +
+    "\n- The reasoning loop ends when you stop calling tools. You do not need a special signal to finish — simply produce a text-only response when done." +
     "\n- Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems.";
 }
 
@@ -157,18 +173,34 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
  * Delta-driven LLM reasoning hook.
  *
  * Fires when deps change (like useEffect). Sends the prompt + delta to the LLM
- * with scoped tools. Returns the reasoning result. Automatic settling via deps array.
+ * with scoped tools. Returns a rich status object that the component can use to
+ * render loading states, errors, and typed responses.
  *
  * Usage:
- *   const result = useReasoning("Analyze this data", [data], { tools, onToolCall });
+ *   const { status, response, statusText } = useReasoning<MyData>(
+ *     "Analyze this data", [data], {
+ *       responseSchema: { type: "object", properties: { ... }, required: [...] },
+ *       tools,
+ *     }
+ *   );
+ *
+ *   if (status === "reasoning") return <Spinner label={statusText} />;
+ *   if (response) return <MyUI data={response} />;
  */
-export function useReasoning(
+export function useReasoning<T = { content: string }>(
   prompt: string | ((prev: any[], next: any[]) => string),
   deps: any[],
-  options: ReasoningOptions = {},
-): ReasoningResult | null {
-  const [result, setResult] = useState<ReasoningResult | null>(null);
-  const [isReasoning, setIsReasoning] = useState(false);
+  options: UseReasoningOptions<T> = {},
+): UseReasoningReturn<T> {
+  const resolvedMaxTurns = options.maxTurns ?? 3;
+  const [state, setState] = useState<UseReasoningReturn<T>>({
+    status: "idle",
+    response: null,
+    error: null,
+    turn: 0,
+    maxTurns: resolvedMaxTurns,
+    statusText: null,
+  });
   const prevDepsRef = useRef<any[] | null>(null);
   const fireCountRef = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -185,6 +217,13 @@ export function useReasoning(
   // Stable reference to options
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  // Helper: update state if still mounted
+  const update = useCallback((patch: Partial<UseReasoningReturn<T>>) => {
+    if (mountedRef.current) {
+      setState(function(prev) { return { ...prev, ...patch } as UseReasoningReturn<T>; });
+    }
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -211,17 +250,18 @@ export function useReasoning(
 
       if (!resolvedPrompt) return;
 
-      setIsReasoning(true);
       fireCountRef.current++;
+
+      const { tools: localTools = [], onToolCall: localOnToolCall, componentId: optComponentId, maxTurns = 3, responseSchema } = optionsRef.current;
+
+      update({ status: "reasoning", response: null, error: null, turn: 0, maxTurns, statusText: "Thinking..." });
 
       try {
         const config = runtime.config;
         if (config.apiMode === "none") {
-          setResult({ content: "No API configured." });
+          update({ status: "error", error: "No API configured.", statusText: null });
           return;
         }
-
-        const { tools: localTools = [], onToolCall: localOnToolCall, componentId: optComponentId, maxTurns = 3 } = optionsRef.current;
 
         // Merge parent tools (from context) with component-local tools
         const ctx = parentCtxRef.current;
@@ -229,7 +269,10 @@ export function useReasoning(
         const allTools = [...parentTools, ...localTools];
         const componentId = optComponentId || ctx?.componentId;
 
-        // Unified dispatch: routes to parent handler, local handler, or local onToolCall
+        // Track the latest response from the respond tool (last call wins)
+        let latestResponse: T | null = null;
+
+        // Unified dispatch: routes to builtin → parent → local → onToolCall
         const dispatchTool = (name: string, args: any): any => {
           const logDispatch = (route: string, result: any) => {
             const w = window as any;
@@ -242,7 +285,7 @@ export function useReasoning(
               response: { tool: name, args, route, result },
             });
           };
-          // __reshape always goes to context
+          // __reshape always goes to context — TERMINAL
           if (name === "__reshape") {
             if (ctx?.reshape) { ctx.reshape(args?.reason || "self-requested"); logDispatch("reshape", "triggered"); return "reshape triggered"; }
             logDispatch("reshape", "no context");
@@ -320,29 +363,24 @@ export function useReasoning(
           return undefined;
         };
 
-        // Build the reason_response tool (terminal signal — "I'm done reasoning")
-        const reasonTool = {
-          name: "reason_response",
-          description: "Return your final reasoning result. Call this when you are done reasoning and have taken all needed actions.",
-          input_schema: {
-            type: "object",
+        // respond tool — non-terminal. Schema from responseSchema option,
+        // or default to { content: string }.
+        const respondTool = {
+          name: "respond",
+          description: "Provide your response to the component. Call this when you have determined what the component needs. You can call other tools in the same turn.",
+          input_schema: responseSchema || {
+            type: "object" as const,
             properties: {
-              content: { type: "string", description: "Brief text summary of your assessment" },
-              structured: { type: "object", description: "Structured data to return to the component (any shape)", additionalProperties: true },
-              reshape: {
-                type: "object",
-                properties: { reason: { type: "string", description: "Why your current source needs to be rewritten" } },
-                description: "Request self-modification when current source is insufficient for the task",
-              },
+              content: { type: "string", description: "Your response text" },
             },
+            required: ["content"],
           },
         };
 
-        // __reshape as a direct API tool — always available per v2 architecture.
-        // The component can call this to trigger re-authoring of its own source.
+        // __reshape — the only terminal tool (component will be replaced)
         const reshapeTool = {
           name: "__reshape",
-          description: "Rewrite your own source code to better handle the current situation. Use when your current implementation cannot adequately handle the inputs or task. Prefer composing child AbstractComponents for sub-problems over doing nothing.",
+          description: "Rewrite your own source code to better handle the current situation. TERMINAL: your component will be replaced. Prefer composing child AbstractComponents for sub-problems.",
           input_schema: {
             type: "object",
             properties: {
@@ -352,8 +390,7 @@ export function useReasoning(
           },
         };
 
-        // Built-in introspection tools — the agent's senses for investigating
-        // its environment on demand (v2 §5.2 inspection tool pattern).
+        // Built-in introspection tools (v2 §5.2 inspection tool pattern)
         const introspectionTools = [
           {
             name: "read_atom",
@@ -412,17 +449,15 @@ export function useReasoning(
           };
         };
 
-        // All tools sent as real Anthropic API tools:
-        // Terminal: reason_response, __reshape
-        // Introspection: read_atom, write_atom, read_component_source, list_components, list_atoms
-        // Domain: parent & local tools
-        const apiTools = [reasonTool, reshapeTool, ...introspectionTools, ...allTools.map(toAPITool)];
+        // All API tools: respond (non-terminal), __reshape (terminal),
+        // introspection (non-terminal), domain (non-terminal)
+        const apiTools = [respondTool, reshapeTool, ...introspectionTools, ...allTools.map(toAPITool)];
 
-        // Build system context from merged tools
-        const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
+        // Build system context
+        const runtimeCtx = { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ };
+        const system = buildSystemContext(allTools, componentId, runtimeCtx, responseSchema);
 
-        // Build the user message with actual dependency values so the LLM
-        // can reason about concrete data instead of a blind prompt.
+        // Build user message with dependency values
         let userMessage = resolvedPrompt;
         if (deps.length > 0) {
           const depsDesc = deps.map(function(d: any, i: number) {
@@ -452,76 +487,75 @@ export function useReasoning(
           _source: "reasoning:" + (componentId || "anonymous"),
         };
 
-        // Multi-turn agent loop: LLM calls tools directly via API,
-        // reason_response is the terminal "I'm done" signal.
-        let latestResult: ReasoningResult | null = null;
+        // Multi-turn agent loop.
+        // Terminates when: (1) __reshape called, (2) no tool calls, (3) maxTurns.
+        // respond is non-terminal — it writes to the response slot, loop continues.
 
         for (let turn = 0; turn < maxTurns; turn++) {
+          const turnLabel = maxTurns > 1 ? " (turn " + (turn + 1) + "/" + maxTurns + ")" : "";
+          update({ turn: turn + 1, statusText: turn === 0 ? "Thinking..." : "Reasoning..." + turnLabel });
+
           const response = await runtime.callLLM(system, conversationMessages, extras);
 
           if (!mountedRef.current) return;
 
           if (response.error) {
-            setResult({ content: "Reasoning error: " + response.error });
+            update({ status: "error", error: "Reasoning error: " + response.error, statusText: null });
             return;
           }
 
           const data = response.data;
           const contentBlocks = data?.content || [];
 
-          // Check for reason_response — terminal signal ("I'm done reasoning")
-          const reasonBlock = contentBlocks.find(
-            (b: any) => b.type === "tool_use" && b.name === "reason_response"
-          );
+          // Gather all tool_use blocks
+          const allToolBlocks = contentBlocks.filter((b: any) => b.type === "tool_use");
 
-          if (reasonBlock?.input) {
-            const r: ReasoningResult = reasonBlock.input;
-            latestResult = r;
-
-            // Handle reshape (auto-dispatch from reason_response.reshape field)
-            if (r.reshape) {
-              dispatchTool("__reshape", r.reshape);
-            }
-            break;
-          }
-
-          // Check for __reshape — terminal signal (component will be replaced)
-          const reshapeBlock = contentBlocks.find(
-            (b: any) => b.type === "tool_use" && b.name === "__reshape"
-          );
-
+          // Check for __reshape — TERMINAL (component will be replaced)
+          const reshapeBlock = allToolBlocks.find((b: any) => b.name === "__reshape");
           if (reshapeBlock?.input) {
-            dispatchTool("__reshape", reshapeBlock.input);
-            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
-            latestResult = { content: text || "Reshape requested", reshape: reshapeBlock.input };
-            break;
-          }
-
-          // Collect all non-terminal tool_use blocks
-          const toolUseBlocks = contentBlocks.filter(
-            (b: any) => b.type === "tool_use" && b.name !== "reason_response" && b.name !== "__reshape"
-          );
-
-          if (toolUseBlocks.length === 0) {
-            // No tools called — extract text as fallback
-            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
-            latestResult = { content: text };
-            break;
-          }
-
-          // Last allowed turn — dispatch tools but don't loop back
-          if (turn >= maxTurns - 1) {
-            for (const tb of toolUseBlocks) {
-              dispatchTool(tb.name, tb.input);
+            update({ statusText: "Reshaping..." });
+            // Process sibling tool calls (including respond) before terminating
+            for (const tb of allToolBlocks) {
+              if (tb.name === "respond") {
+                latestResponse = tb.input as T;
+              } else if (tb.name !== "__reshape") {
+                try { await Promise.resolve(dispatchTool(tb.name, tb.input)); } catch {}
+              }
             }
-            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
-            latestResult = { content: text || "Max turns reached" };
+            dispatchTool("__reshape", reshapeBlock.input);
+            // Component is being replaced — set final state
+            update({ status: "done", response: latestResponse, statusText: null });
+            return;
+          }
+
+          // No tool calls — agent is done, loop ends naturally
+          if (allToolBlocks.length === 0) {
+            // If agent never called respond, extract text as fallback content
+            if (!latestResponse) {
+              const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
+              if (text) latestResponse = { content: text } as any;
+            }
             break;
           }
 
-          // Dispatch each tool and collect results as tool_result blocks
+          // Process all tool calls in this turn (including respond)
           const toolResultBlocks: any[] = [];
-          for (const tb of toolUseBlocks) {
+          for (const tb of allToolBlocks) {
+            // respond — capture response, non-terminal
+            if (tb.name === "respond") {
+              latestResponse = tb.input as T;
+              update({ response: latestResponse, statusText: "Response ready" + turnLabel });
+              toolResultBlocks.push({
+                type: "tool_result",
+                tool_use_id: tb.id,
+                content: "Response received.",
+              });
+              continue;
+            }
+
+            // Update statusText with tool being called
+            update({ statusText: "Calling " + tb.name + "..." + turnLabel });
+
             try {
               const res = await Promise.resolve(dispatchTool(tb.name, tb.input));
               toolResultBlocks.push({
@@ -539,18 +573,19 @@ export function useReasoning(
             }
           }
 
-          // Feed results back following Anthropic API conversation structure
+          // Last allowed turn — don't loop back
+          if (turn >= maxTurns - 1) break;
+
+          // Feed results back for next turn
           conversationMessages.push({ role: "assistant", content: contentBlocks });
           conversationMessages.push({ role: "user", content: toolResultBlocks });
         }
 
-        if (latestResult) setResult(latestResult);
+        update({ status: "done", response: latestResponse, statusText: null });
       } catch (err: any) {
         if (mountedRef.current) {
-          setResult({ content: "Reasoning error: " + (err.message || String(err)) });
+          update({ status: "error", error: "Reasoning error: " + (err.message || String(err)), statusText: null });
         }
-      } finally {
-        if (mountedRef.current) setIsReasoning(false);
       }
     };
 
@@ -568,9 +603,7 @@ export function useReasoning(
     };
   }, deps); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Attach isReasoning to the result for convenience
-  if (result) (result as any)._isReasoning = isReasoning;
-  return result;
+  return state;
 }
 
 // ---- useAtom ----
