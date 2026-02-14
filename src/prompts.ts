@@ -120,7 +120,7 @@ RULES:
 - Use useReasoning when the component should reason about input changes (not every component needs it)
 - Use props.handlers for implementation callbacks (UI wiring)
 - Be visually polished. Use styled-components for styling.
-- Handle the case where useReasoning result is null (initial render before reasoning completes)
+- useReasoning returns { status, response, statusText } — use status to show loading/error states
 - Keep the component focused — do one thing well
 
 ${guidelines ? `GUIDELINES:\n${guidelines}\n` : ""}${reauthorBlock}`;
@@ -144,12 +144,19 @@ export function buildReasoningContext(
 
 AVAILABLE TOOLS:
 ${toolList}
-- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string }). Prefer composing child AbstractComponents for sub-problems.
+- respond: Provide your response to the component (args defined by responseSchema)
+- __reshape: Rewrite your own source code (args: { reason: string }). TERMINAL — your component will be replaced.
+- read_atom: Read the full value of a shared state atom (args: { key: string })
+- write_atom: Write a value to a shared state atom (args: { key: string, value: any })
+- read_component_source: Read source code of any authored component (args: { id: string })
+- list_components: List all authored component IDs
+- list_atoms: List all shared state atom keys with value summaries
 
 INSTRUCTIONS:
 - Examine the input values and reason about what changed and what action to take.
-- Call tools to take action. Use __reshape when your current source cannot handle what's needed.
-- When done, call reason_response with your final assessment.
-- reason_response fields: content (brief text summary), structured (any data for the component), reshape ({ reason } to request source rewrite).
+- Call respond to provide your output to the component. You can call respond alongside other tools in the same turn.
+- Use introspection tools (read_atom, list_components, etc.) to investigate your environment on demand.
+- __reshape is TERMINAL — it replaces your source code entirely. Only use when your current implementation is fundamentally insufficient.
+- The reasoning loop ends when you stop calling tools. You do not need a special signal to finish — simply produce a text-only response when done.
 - Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems.`;
 }

@@ -58,6 +58,7 @@ export type {
   CreateOptions,
   CreateResult,
   ToolDef,
+  UseReasoningReturn,
   ReasoningResult,
   MutationRecord,
 } from "./types";
