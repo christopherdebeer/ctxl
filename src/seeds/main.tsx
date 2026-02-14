@@ -29,12 +29,6 @@ const el = document.getElementById("root")!;
 const root = (window.__RUNTIME__.root ??= createRoot(el));
 
 if (!window.__RUNTIME__._mounted) {
-  // Read objective from atoms or use default
-  const atoms = window.__ATOMS__;
-  const objectiveAtom = atoms?.create("objective", "");
-  const objective = objectiveAtom?.get() || "";
-  const isFirstVisit = !objective;
-
   // Wrap the tree in RuntimeContext.Provider — dogfooding the same context
   // that library consumers use via <CtxlProvider>.
   const runtimeCtx = { runtime: window.__RUNTIME__, atoms: window.__ATOMS__ };
@@ -43,46 +37,67 @@ if (!window.__RUNTIME__._mounted) {
     React.createElement(RuntimeContext.Provider, { value: runtimeCtx },
       React.createElement(AbstractComponent, {
         id: "root",
-        inputs: { objective, isFirstVisit },
+        inputs: {},
         tools: [
           {
             name: "set_objective",
-            description: "Set the user's chosen objective. Persists across sessions.",
+            description: "Set the user's chosen objective via reasoning. Persists across sessions.",
             schema: { objective: "string" },
             handler: (args: any) => {
-              objectiveAtom.set(args.objective);
+              const atoms = window.__ATOMS__;
+              const atom = atoms?.create("objective", "");
+              atom?.set(args.objective);
               return "Objective set: " + args.objective;
             },
           },
           {
             name: "report",
             description: "Report status or observations to the system",
-            schema: { message: "string", type: "'info' | 'success' | 'warning'" },
+            schema: { message: "string" },
             handler: (args: any) => { console.log("[root] report:", args); return "reported"; },
           },
         ],
+        handlers: {
+          setObjective: {
+            description: "Set the user's objective directly (called from UI interactions like button clicks). Persists to atoms.",
+            fn: (objective: string) => {
+              const atoms = window.__ATOMS__;
+              const atom = atoms?.create("objective", "");
+              atom?.set(objective);
+            },
+          },
+        },
         guidelines: `You are the root component of ctxl — a tool for making tools.
 
-FIRST VISIT (isFirstVisit is true):
-Present meaningful invitations — not a blank input field or chat box. Offer starting points that feel like genuine affordances:
-- "Let's make a tool" — help the user build something useful for their work
-- "Get something done" — focus on a specific task the user describes
-- "Explore" — open-ended discovery of what's possible
-- "Learn something" — guided exploration of a topic through building
+REACTIVE STATE:
+Use useAtom("objective", "") to subscribe to the objective. This is LIVE — it updates when the user sets an objective.
+Do NOT rely on props.inputs for the objective — it's static. Use useAtom for reactive state.
 
-Each invitation should lead to structure: when chosen, use set_objective to persist it, then decompose into a workspace with child AbstractComponents. The invitations are prompts in the creative sense — they scaffold the user from "I have a vague idea" to "I have a working thing."
+FIRST VISIT (objective is empty):
+Present meaningful invitations — not a blank input field or chat box. Offer starting points:
+- "Make a tool" — help the user build something useful
+- "Get something done" — focus on a specific task
+- "Explore" — open-ended discovery
+- "Learn something" — guided exploration through building
 
-RETURNING VISIT (isFirstVisit is false):
-The user has an objective. Decompose it into a workspace. Show progress. Let the user reshape the objective if needed.
+When the user clicks an invitation or submits custom text, call props.handlers.setObjective(text) DIRECTLY.
+This is a handler, not a reasoning tool — it fires immediately without LLM latency.
+Example: onClick={() => props.handlers.setObjective("I want to make a tool for tracking habits")}
+
+RETURNING VISIT (objective is non-empty):
+Show the objective and decompose into a workspace with child AbstractComponents.
+Let the user change the objective if needed (call props.handlers.setObjective with the new value).
 
 DESIGN PRINCIPLES:
-- The interface should be generative: suggest, scaffold, show what's possible
-- Use useReasoning to adapt based on what the user does (not just what they say)
+- Use useAtom("objective", "") for reactive objective state — this is the source of truth
+- Call props.handlers.setObjective(text) for immediate UI actions (button clicks, form submits)
+- The set_objective tool is for reasoning-initiated changes — the handler is for direct user actions
+- Use useReasoning for ongoing adaptation (what to show, how to decompose the workspace)
 - Decompose into child AbstractComponents — don't try to do everything in the root
 - Use styled-components for a dark, minimal aesthetic
 - Be welcoming without being cloying. Direct, not chatty.
-- Include an input for the user to describe what they want in their own words
-- Use useEngagement to track which invitations/sections the user interacts with`,
+- Include a text input for custom objectives
+- Use useEngagement to track which sections the user interacts with`,
         fallback: React.createElement("div", {
           style: {
             display: "flex", alignItems: "center", justifyContent: "center",

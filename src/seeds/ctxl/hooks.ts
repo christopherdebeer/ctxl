@@ -490,11 +490,17 @@ export function useReasoning<T = { content: string }>(
         ];
 
         // Convert ToolDef[] → Anthropic API tool format
+        const validSchemaTypes = ["string", "number", "integer", "boolean", "array", "object", "null"];
         const toAPITool = (t: ToolDef) => {
           const properties: Record<string, any> = {};
           if (t.schema) {
-            for (const [key, type] of Object.entries(t.schema)) {
-              properties[key] = { type };
+            for (const [key, typeHint] of Object.entries(t.schema)) {
+              if (validSchemaTypes.indexOf(typeHint) >= 0) {
+                properties[key] = { type: typeHint };
+              } else {
+                // Non-standard type hint (e.g. "'table' | 'chart'") — use string with description
+                properties[key] = { type: "string", description: typeHint };
+              }
             }
           }
           return {
