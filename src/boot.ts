@@ -46,6 +46,7 @@ const aboutBody = aboutEl.querySelector(".markdown-body") as HTMLElement;
 const closeDrawerBtn = document.getElementById("closeDrawerBtn")!;
 const drawerTabs = document.querySelectorAll<HTMLElement>(".drawerTab");
 const drawerInspectEl = document.getElementById("drawerInspect")!;
+const drawerLogEl = document.getElementById("drawerLog")!;
 const drawerContentEl = document.getElementById("drawerContent")!;
 
 // ============================================================
@@ -249,9 +250,105 @@ function renderInspectPanel() {
   drawerInspectEl.innerHTML = html;
 }
 
-// ---- Drawer internal tabs (Code | Inspect) ----
+// ---- Log panel rendering ----
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function summarizeResponse(entry: any): { pills: string; preview: string } {
+  if (entry.error) {
+    return { pills: `<span class="log-pill error">error</span>`, preview: escHtml(entry.error).slice(0, 120) };
+  }
+  const data = entry.response;
+  if (!data?.content) return { pills: "", preview: "no content" };
+
+  const pills: string[] = [];
+  let preview = "";
+  for (const block of data.content) {
+    if (block.type === "text") {
+      pills.push(`<span class="log-pill text">text</span>`);
+      if (!preview) preview = escHtml(block.text || "").slice(0, 80);
+    } else if (block.type === "tool_use") {
+      pills.push(`<span class="log-pill tool-use">${escHtml(block.name)}</span>`);
+      if (!preview && block.input) {
+        const keys = Object.keys(block.input);
+        preview = keys.slice(0, 3).join(", ") + (keys.length > 3 ? "..." : "");
+      }
+    }
+  }
+  return { pills: pills.join(" "), preview };
+}
+
+function renderLogPanel() {
+  const log: any[] = (window as any).__LOG__ || [];
+
+  if (log.length === 0) {
+    drawerLogEl.innerHTML = `<div class="log-empty">No LLM calls yet. Configure API and interact with a component.</div>`;
+    return;
+  }
+
+  let html = "";
+  // Render newest first
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    const time = new Date(e.timestamp).toLocaleTimeString();
+    const srcType = e.source.split(":")[0];
+    const srcId = e.source.split(":").slice(1).join(":") || "";
+    const { pills, preview } = summarizeResponse(e);
+    const dur = e.durationMs != null ? `${e.durationMs}ms` : "";
+
+    // Build expandable body content
+    let body = "";
+
+    // For dispatch entries, show compact info
+    if (srcType === "dispatch") {
+      const r = e.response || {};
+      body += `Tool: ${escHtml(r.tool || "?")}\nArgs: ${escHtml(JSON.stringify(r.args, null, 2) || "{}")}\nRoute: ${escHtml(r.route || "?")}\nResult: ${escHtml(JSON.stringify(r.result) || "undefined")}`;
+    } else {
+      // Show user messages (truncated)
+      if (e.messages?.length) {
+        body += "--- Messages ---\n";
+        for (const m of e.messages) {
+          const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+          body += `[${escHtml(m.role)}] ${escHtml(content.slice(0, 500))}${content.length > 500 ? "..." : ""}\n\n`;
+        }
+      }
+      // Show response content blocks
+      if (e.response?.content) {
+        body += "--- Response ---\n";
+        for (const block of e.response.content) {
+          if (block.type === "text") {
+            body += `[text] ${escHtml(block.text || "")}\n\n`;
+          } else if (block.type === "tool_use") {
+            body += `[tool_use] ${escHtml(block.name)} (id: ${escHtml(block.id || "")})\n${escHtml(JSON.stringify(block.input, null, 2) || "{}")}\n\n`;
+          }
+        }
+      }
+      if (e.error) {
+        body += `--- Error ---\n${escHtml(e.error)}\n`;
+      }
+    }
+
+    html += `<div class="log-entry">`;
+    html += `<div class="log-header" onclick="this.nextElementSibling.classList.toggle('open')">`;
+    html += `<span class="log-source ${escHtml(srcType)}">${escHtml(e.source)}</span>`;
+    html += pills;
+    if (e.error) html += `<span class="log-error">ERR</span>`;
+    if (dur) html += `<span class="log-duration">${dur}</span>`;
+    html += `<span class="log-time">${time}</span>`;
+    html += `</div>`;
+    html += `<div class="log-body">${body}</div>`;
+    html += `</div>`;
+  }
+
+  drawerLogEl.innerHTML = html;
+}
+
+// ---- Drawer internal tabs (Code | Inspect | Log) ----
 
 let activeDrawerTab = "code";
+let logInterval: ReturnType<typeof setInterval> | null = null;
 
 function setDrawerTab(tab: string) {
   activeDrawerTab = tab;
@@ -260,6 +357,7 @@ function setDrawerTab(tab: string) {
   // Toggle content visibility
   editorEl.style.display = tab === "code" ? "" : "none";
   drawerInspectEl.classList.toggle("active", tab === "inspect");
+  drawerLogEl.classList.toggle("active", tab === "log");
 
   // Show/hide files bar (only relevant for code tab)
   filesEl.style.display = tab === "code" ? "" : "none";
@@ -269,6 +367,13 @@ function setDrawerTab(tab: string) {
   if (tab === "inspect") {
     renderInspectPanel();
     inspectInterval = setInterval(renderInspectPanel, 2000);
+  }
+
+  // Auto-refresh log while visible
+  if (logInterval) { clearInterval(logInterval); logInterval = null; }
+  if (tab === "log") {
+    renderLogPanel();
+    logInterval = setInterval(renderLogPanel, 2000);
   }
 }
 

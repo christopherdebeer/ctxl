@@ -198,24 +198,43 @@ export function useReasoning(
 
         // Unified dispatch: routes to parent handler, local handler, or local onToolCall
         const dispatchTool = (name: string, args: any): any => {
+          const logDispatch = (route: string, result: any) => {
+            const w = window as any;
+            if (!w.__LOG__) w.__LOG__ = [];
+            w.__LOG__.push({
+              id: Math.random().toString(36).slice(2, 10),
+              timestamp: Date.now(),
+              source: "dispatch:" + (componentId || "anonymous"),
+              system: "", messages: [], model: "",
+              response: { tool: name, args, route, result },
+            });
+          };
           // __reshape always goes to context
           if (name === "__reshape") {
-            if (ctx?.reshape) { ctx.reshape(args?.reason || "self-requested"); return "reshape triggered"; }
+            if (ctx?.reshape) { ctx.reshape(args?.reason || "self-requested"); logDispatch("reshape", "triggered"); return "reshape triggered"; }
+            logDispatch("reshape", "no context");
             return undefined;
           }
           // Parent tool — dispatch via context
           if (ctx && parentTools.some((t: any) => t.name === name)) {
-            return ctx.dispatch(name, args);
+            const result = ctx.dispatch(name, args);
+            logDispatch("parent", result);
+            return result;
           }
           // Local tool with inline handler
           const localTool = localTools.find((t: any) => t.name === name);
           if (localTool && typeof localTool.handler === "function") {
-            return localTool.handler(args);
+            const result = localTool.handler(args);
+            logDispatch("local", result);
+            return result;
           }
           // Fallback to onToolCall
           if (localOnToolCall) {
-            return localOnToolCall(name, args);
+            const result = localOnToolCall(name, args);
+            logDispatch("onToolCall", result);
+            return result;
           }
+          logDispatch("unhandled", undefined);
           console.warn("[useReasoning] No handler for tool: " + name);
           return undefined;
         };
@@ -257,6 +276,7 @@ export function useReasoning(
         const extras = {
           tools: [reasonTool],
           tool_choice: { type: "tool", name: "reason_response" },
+          _source: "reasoning:" + (componentId || "anonymous"),
         };
 
         // Multi-turn agent loop: dispatch tools, feed results back, let agent continue

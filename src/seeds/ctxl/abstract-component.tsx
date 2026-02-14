@@ -327,6 +327,7 @@ export function AbstractComponent({
         const response = await runtime.callLLM(system, messages, {
           tools: [authorTool],
           tool_choice: { type: "tool", name: "write_component" },
+          _source: "author:" + id,
         });
 
         if (response.error) {
