@@ -80,14 +80,33 @@ export const ToolContext = createContext<ToolContextValue | null>(null);
 
 function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?: RuntimeContextValue | null): string {
   const id = componentId || "anonymous";
-  const toolLines = tools.map(t => {
+
+  // Tool descriptions (text context for the LLM alongside real API tools)
+  const toolLines = tools.map(function(t) {
     let line = "- " + t.name + ": " + t.description;
     if (t.schema) {
       const fields = Object.entries(t.schema).map(function(e) { return e[0] + ": " + e[1]; }).join(", ");
       line += " (args: { " + fields + " })";
     }
     return line;
-  }).join("\n");
+  });
+  // __reshape is always available (even if not in parent/local tools)
+  toolLines.push("- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string }). Prefer composing child AbstractComponents for sub-problems.");
+
+  // Component source for self-awareness — the agent needs to know its current form
+  // to decide whether reshaping is needed
+  let sourceBlock = "";
+  try {
+    const runtime = runtimeCtx?.runtime;
+    if (runtime?.files) {
+      const source = runtime.files.get("/src/ac/" + id + ".tsx");
+      if (source && source.length < 4000) {
+        sourceBlock = "\n\nYOUR CURRENT SOURCE:\n" + source;
+      } else if (source) {
+        sourceBlock = "\n\nYOUR CURRENT SOURCE: (" + source.length + " chars, truncated)\n" + source.slice(0, 3000) + "\n...(truncated)";
+      }
+    }
+  } catch {}
 
   // Inspection context: atom state + sibling components (on-demand visibility)
   let inspectionBlock = "";
@@ -96,7 +115,7 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     if (atoms && typeof atoms.keys === "function") {
       const atomKeys = atoms.keys();
       if (atomKeys.length > 0) {
-        const atomSummary = atomKeys.map((k: string) => {
+        const atomSummary = atomKeys.map(function(k: string) {
           try {
             const v = atoms.get(k)?.get();
             const s = JSON.stringify(v);
@@ -108,14 +127,23 @@ function buildSystemContext(tools: ToolDef[], componentId?: string, runtimeCtx?:
     }
     const components = (window as any).__COMPONENTS__;
     if (components) {
-      const siblings = Object.keys(components).filter(k => k !== id);
+      const siblings = Object.keys(components).filter(function(k) { return k !== id; });
       if (siblings.length > 0) {
         inspectionBlock += "\n\nSIBLING COMPONENTS: " + siblings.join(", ");
       }
     }
   } catch {}
 
-  return "You are a React component (" + id + ") reasoning about a change in your inputs.\n\nAVAILABLE TOOLS:\n" + toolLines + inspectionBlock + "\n\nYou can call tools directly via the API. When you are done reasoning, call the reason_response tool with your final assessment.\n\nREASON_RESPONSE FIELDS:\n- \"content\": Brief text summary of your assessment (optional)\n- \"structured\": Any structured data to return to the component (optional)\n- \"reshape\": Set { reason: \"...\" } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.\n\nBe concise. Reason about what changed and what action, if any, to take.";
+  return "You are a React component (" + id + ") reasoning about a change in your inputs. Your render output is your body — your expression to the world. You reason about input changes and take action through tools." +
+    sourceBlock +
+    "\n\nAVAILABLE TOOLS:\n" + toolLines.join("\n") +
+    inspectionBlock +
+    "\n\nINSTRUCTIONS:" +
+    "\n- Examine the input values and reason about what changed and what action to take." +
+    "\n- Call tools to take action. Use __reshape when your current source cannot handle what's needed." +
+    "\n- When done, call reason_response with your final assessment." +
+    "\n- reason_response fields: content (brief text summary), structured (any data for the component), reshape ({ reason } to request source rewrite)." +
+    "\n- Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems.";
 }
 
 // ---- useReasoning ----
@@ -242,18 +270,32 @@ export function useReasoning(
         // Build the reason_response tool (terminal signal — "I'm done reasoning")
         const reasonTool = {
           name: "reason_response",
-          description: "Return your final reasoning result. Call this when you are done.",
+          description: "Return your final reasoning result. Call this when you are done reasoning and have taken all needed actions.",
           input_schema: {
             type: "object",
             properties: {
-              content: { type: "string", description: "Brief assessment" },
-              structured: { type: "object", description: "Structured data", additionalProperties: true },
+              content: { type: "string", description: "Brief text summary of your assessment" },
+              structured: { type: "object", description: "Structured data to return to the component (any shape)", additionalProperties: true },
               reshape: {
                 type: "object",
-                properties: { reason: { type: "string" } },
-                description: "Request self-modification when current source is insufficient",
+                properties: { reason: { type: "string", description: "Why your current source needs to be rewritten" } },
+                description: "Request self-modification when current source is insufficient for the task",
               },
             },
+          },
+        };
+
+        // __reshape as a direct API tool — always available per v2 architecture.
+        // The component can call this to trigger re-authoring of its own source.
+        const reshapeTool = {
+          name: "__reshape",
+          description: "Rewrite your own source code to better handle the current situation. Use when your current implementation cannot adequately handle the inputs or task. Prefer composing child AbstractComponents for sub-problems over doing nothing.",
+          input_schema: {
+            type: "object",
+            properties: {
+              reason: { type: "string", description: "Why you need to be rewritten and what the new version should handle" },
+            },
+            required: ["reason"],
           },
         };
 
@@ -272,8 +314,9 @@ export function useReasoning(
           };
         };
 
-        // All tools sent as real Anthropic API tools
-        const apiTools = [reasonTool, ...allTools.map(toAPITool)];
+        // All tools sent as real Anthropic API tools:
+        // reason_response (terminal), __reshape (terminal), plus parent & local tools
+        const apiTools = [reasonTool, reshapeTool, ...allTools.map(toAPITool)];
 
         // Build system context from merged tools
         const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
@@ -326,7 +369,7 @@ export function useReasoning(
           const data = response.data;
           const contentBlocks = data?.content || [];
 
-          // Check for reason_response — terminal signal
+          // Check for reason_response — terminal signal ("I'm done reasoning")
           const reasonBlock = contentBlocks.find(
             (b: any) => b.type === "tool_use" && b.name === "reason_response"
           );
@@ -335,16 +378,28 @@ export function useReasoning(
             const r: ReasoningResult = reasonBlock.input;
             latestResult = r;
 
-            // Handle reshape
+            // Handle reshape (auto-dispatch from reason_response.reshape field)
             if (r.reshape) {
               dispatchTool("__reshape", r.reshape);
             }
             break;
           }
 
-          // Collect all non-reason_response tool_use blocks
+          // Check for __reshape — terminal signal (component will be replaced)
+          const reshapeBlock = contentBlocks.find(
+            (b: any) => b.type === "tool_use" && b.name === "__reshape"
+          );
+
+          if (reshapeBlock?.input) {
+            dispatchTool("__reshape", reshapeBlock.input);
+            const text = contentBlocks.find((b: any) => b.type === "text")?.text || "";
+            latestResult = { content: text || "Reshape requested", reshape: reshapeBlock.input };
+            break;
+          }
+
+          // Collect all non-terminal tool_use blocks
           const toolUseBlocks = contentBlocks.filter(
-            (b: any) => b.type === "tool_use" && b.name !== "reason_response"
+            (b: any) => b.type === "tool_use" && b.name !== "reason_response" && b.name !== "__reshape"
           );
 
           if (toolUseBlocks.length === 0) {

@@ -127,7 +127,12 @@ ${guidelines ? `GUIDELINES:\n${guidelines}\n` : ""}${reauthorBlock}`;
 }
 
 /**
- * Build a minimal reasoning context for useReasoning hook calls.
+ * Build reasoning context for useReasoning hook calls.
+ *
+ * Note: The VFS seed (seeds/ctxl/hooks.ts) has its own inline
+ * buildSystemContext that includes runtime inspection (atoms, siblings,
+ * component source). This host-side version is kept in sync for any
+ * future host-side reasoning callers.
  */
 export function buildReasoningContext(
   componentId: string,
@@ -135,17 +140,16 @@ export function buildReasoningContext(
 ): string {
   const toolList = describeTools(tools);
 
-  return `You are a React component (${componentId}) reasoning about a change in your inputs.
+  return `You are a React component (${componentId}) reasoning about a change in your inputs. Your render output is your body — your expression to the world. You reason about input changes and take action through tools.
 
 AVAILABLE TOOLS:
 ${toolList}
+- __reshape: Rewrite your own source code to better handle the current situation (args: { reason: string }). Prefer composing child AbstractComponents for sub-problems.
 
-You can call tools directly via the API. When you are done reasoning, call the reason_response tool with your final assessment.
-
-REASON_RESPONSE FIELDS:
-- "content": Brief text summary of your assessment (optional)
-- "structured": Any structured data to return to the component (optional)
-- "reshape": Set { reason: "..." } when your current source can't clearly handle what's needed. Prefer action over inaction — child AbstractComponents can handle sub-problems.
-
-Be concise. Reason about what changed and what action, if any, to take.`;
+INSTRUCTIONS:
+- Examine the input values and reason about what changed and what action to take.
+- Call tools to take action. Use __reshape when your current source cannot handle what's needed.
+- When done, call reason_response with your final assessment.
+- reason_response fields: content (brief text summary), structured (any data for the component), reshape ({ reason } to request source rewrite).
+- Be concise. Prefer action over inaction — child AbstractComponents can handle sub-problems.`;
 }
