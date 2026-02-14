@@ -278,7 +278,31 @@ export function useReasoning(
         // Build system context from merged tools
         const system = buildSystemContext(allTools, componentId, { runtime: ctxRuntime, atoms: (window as any).__ATOMS__ });
 
-        const conversationMessages: any[] = [{ role: "user", content: resolvedPrompt }];
+        // Build the user message with actual dependency values so the LLM
+        // can reason about concrete data instead of a blind prompt.
+        let userMessage = resolvedPrompt;
+        if (deps.length > 0) {
+          const depsDesc = deps.map(function(d: any, i: number) {
+            try {
+              const s = JSON.stringify(d, null, 2);
+              const truncated = s && s.length > 2000 ? s.slice(0, 2000) + "...(truncated)" : s;
+              return "  [" + i + "]: " + truncated;
+            } catch { return "  [" + i + "]: " + String(d); }
+          }).join("\n");
+          userMessage += "\n\nCURRENT INPUT VALUES:\n" + depsDesc;
+        }
+        if (prevDeps) {
+          const prevDesc = prevDeps.map(function(d: any, i: number) {
+            try {
+              const s = JSON.stringify(d, null, 2);
+              const truncated = s && s.length > 2000 ? s.slice(0, 2000) + "...(truncated)" : s;
+              return "  [" + i + "]: " + truncated;
+            } catch { return "  [" + i + "]: " + String(d); }
+          }).join("\n");
+          userMessage += "\n\nPREVIOUS INPUT VALUES:\n" + prevDesc;
+        }
+
+        const conversationMessages: any[] = [{ role: "user", content: userMessage }];
         const extras = {
           tools: apiTools,
           tool_choice: { type: "auto" as const },

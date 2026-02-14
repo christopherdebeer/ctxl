@@ -252,6 +252,8 @@ function renderInspectPanel() {
 
 // ---- Log panel rendering ----
 
+let lastRenderedLogLen = 0;
+
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -280,69 +282,103 @@ function summarizeResponse(entry: any): { pills: string; preview: string } {
   return { pills: pills.join(" "), preview };
 }
 
+function buildLogEntryHtml(e: any): string {
+  const time = new Date(e.timestamp).toLocaleTimeString();
+  const srcType = e.source.split(":")[0];
+  const { pills } = summarizeResponse(e);
+  const dur = e.durationMs != null ? `${e.durationMs}ms` : "";
+
+  // Build expandable body content
+  let body = "";
+
+  // For dispatch entries, show compact info
+  if (srcType === "dispatch") {
+    const r = e.response || {};
+    body += `Tool: ${escHtml(r.tool || "?")}\nArgs: ${escHtml(JSON.stringify(r.args, null, 2) || "{}")}\nRoute: ${escHtml(r.route || "?")}\nResult: ${escHtml(JSON.stringify(r.result) || "undefined")}`;
+  } else {
+    // Show user messages (truncated)
+    if (e.messages?.length) {
+      body += "--- Messages ---\n";
+      for (const m of e.messages) {
+        const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+        body += `[${escHtml(m.role)}] ${escHtml(content.slice(0, 500))}${content.length > 500 ? "..." : ""}\n\n`;
+      }
+    }
+    // Show response content blocks
+    if (e.response?.content) {
+      body += "--- Response ---\n";
+      for (const block of e.response.content) {
+        if (block.type === "text") {
+          body += `[text] ${escHtml(block.text || "")}\n\n`;
+        } else if (block.type === "tool_use") {
+          body += `[tool_use] ${escHtml(block.name)} (id: ${escHtml(block.id || "")})\n${escHtml(JSON.stringify(block.input, null, 2) || "{}")}\n\n`;
+        }
+      }
+    }
+    if (e.error) {
+      body += `--- Error ---\n${escHtml(e.error)}\n`;
+    }
+  }
+
+  let html = `<div class="log-entry" data-log-id="${escHtml(e.id)}">`;
+  html += `<div class="log-header" onclick="this.nextElementSibling.classList.toggle('open')">`;
+  html += `<span class="log-source ${escHtml(srcType)}">${escHtml(e.source)}</span>`;
+  html += pills;
+  if (e.error) html += `<span class="log-error">ERR</span>`;
+  if (dur) html += `<span class="log-duration">${dur}</span>`;
+  html += `<span class="log-time">${time}</span>`;
+  html += `</div>`;
+  html += `<div class="log-body">${body}</div>`;
+  html += `</div>`;
+  return html;
+}
+
 function renderLogPanel() {
   const log: any[] = (window as any).__LOG__ || [];
 
   if (log.length === 0) {
-    drawerLogEl.innerHTML = `<div class="log-empty">No LLM calls yet. Configure API and interact with a component.</div>`;
+    if (lastRenderedLogLen !== 0) {
+      lastRenderedLogLen = 0;
+      drawerLogEl.innerHTML = `<div class="log-empty">No LLM calls yet. Configure API and interact with a component.</div>`;
+    }
     return;
   }
 
-  let html = "";
-  // Render newest first
-  for (let i = log.length - 1; i >= 0; i--) {
-    const e = log[i];
-    const time = new Date(e.timestamp).toLocaleTimeString();
-    const srcType = e.source.split(":")[0];
-    const srcId = e.source.split(":").slice(1).join(":") || "";
-    const { pills, preview } = summarizeResponse(e);
-    const dur = e.durationMs != null ? `${e.durationMs}ms` : "";
+  // No new entries — skip re-render to preserve expanded/interaction state
+  if (log.length === lastRenderedLogLen) return;
 
-    // Build expandable body content
-    let body = "";
+  // Collect currently expanded entry IDs before DOM update
+  const expandedIds = new Set<string>();
+  drawerLogEl.querySelectorAll(".log-body.open").forEach((el) => {
+    const entry = el.closest(".log-entry") as HTMLElement | null;
+    if (entry?.dataset.logId) expandedIds.add(entry.dataset.logId);
+  });
 
-    // For dispatch entries, show compact info
-    if (srcType === "dispatch") {
-      const r = e.response || {};
-      body += `Tool: ${escHtml(r.tool || "?")}\nArgs: ${escHtml(JSON.stringify(r.args, null, 2) || "{}")}\nRoute: ${escHtml(r.route || "?")}\nResult: ${escHtml(JSON.stringify(r.result) || "undefined")}`;
-    } else {
-      // Show user messages (truncated)
-      if (e.messages?.length) {
-        body += "--- Messages ---\n";
-        for (const m of e.messages) {
-          const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-          body += `[${escHtml(m.role)}] ${escHtml(content.slice(0, 500))}${content.length > 500 ? "..." : ""}\n\n`;
-        }
-      }
-      // Show response content blocks
-      if (e.response?.content) {
-        body += "--- Response ---\n";
-        for (const block of e.response.content) {
-          if (block.type === "text") {
-            body += `[text] ${escHtml(block.text || "")}\n\n`;
-          } else if (block.type === "tool_use") {
-            body += `[tool_use] ${escHtml(block.name)} (id: ${escHtml(block.id || "")})\n${escHtml(JSON.stringify(block.input, null, 2) || "{}")}\n\n`;
-          }
-        }
-      }
-      if (e.error) {
-        body += `--- Error ---\n${escHtml(e.error)}\n`;
-      }
+  // If the log shrank (capped at 100 via splice) or is the first render,
+  // do a full rebuild; otherwise only prepend new entries.
+  if (lastRenderedLogLen === 0 || log.length < lastRenderedLogLen) {
+    let html = "";
+    for (let i = log.length - 1; i >= 0; i--) {
+      html += buildLogEntryHtml(log[i]);
     }
-
-    html += `<div class="log-entry">`;
-    html += `<div class="log-header" onclick="this.nextElementSibling.classList.toggle('open')">`;
-    html += `<span class="log-source ${escHtml(srcType)}">${escHtml(e.source)}</span>`;
-    html += pills;
-    if (e.error) html += `<span class="log-error">ERR</span>`;
-    if (dur) html += `<span class="log-duration">${dur}</span>`;
-    html += `<span class="log-time">${time}</span>`;
-    html += `</div>`;
-    html += `<div class="log-body">${body}</div>`;
-    html += `</div>`;
+    drawerLogEl.innerHTML = html;
+  } else {
+    // Prepend only new entries at the top (newest first display order)
+    let newHtml = "";
+    for (let i = log.length - 1; i >= lastRenderedLogLen; i--) {
+      newHtml += buildLogEntryHtml(log[i]);
+    }
+    drawerLogEl.insertAdjacentHTML("afterbegin", newHtml);
   }
 
-  drawerLogEl.innerHTML = html;
+  lastRenderedLogLen = log.length;
+
+  // Restore expanded state for previously open entries
+  expandedIds.forEach(id => {
+    const entry = drawerLogEl.querySelector(`.log-entry[data-log-id="${id}"]`);
+    const body = entry?.querySelector(".log-body");
+    if (body) body.classList.add("open");
+  });
 }
 
 // ---- Drawer internal tabs (Code | Inspect | Log) ----
