@@ -1,139 +1,113 @@
 # You Are The Component
 
-*On generative interfaces, the isomorphism nobody asked for, and what happens when a component has opinions about its own source code*
+*On tools for making tools, what happens when the interface adapts to you instead of the other way around, and the architecture that fell out of taking that seriously*
 
----
+-----
 
-"You are a helpful assistant."
+“Let’s make a tool.”
 
-Four words that launched a thousand system prompts. The incantation that opens every encounter between a human and a language model, delivered with the solemnity of a baptism and the rigor of a horoscope. *You are* a Python expert. *You are* a medieval historian. *You are* an empathetic therapist with a background in cognitive behavioral approaches. We tell the model who it is and then act surprised when it plays along. The entire field of prompt engineering began as an exercise in role-playing, and the roles got more elaborate even as the underlying insight remained the same: if you tell a statistical model it is something, it will try very hard to be that thing.
+That was the starting point. Not “let’s build a novel React architecture” or “let’s explore the isomorphism between agents and components.” Those came later, and they matter, but they’re mechanism, not motive. The motive was: I make tools for a living, programming is the tool I use to make them, and programming has a recursive dependency on itself. You need to learn programming to make tools, and the tools most people need are the ones they can’t make because they haven’t learned programming. This is a stupid loop and I wanted to break it.
 
-This essay takes the instruction literally.
+[I wrote this down in April 2024 under the heading “Contextual” — a tool for making tools that do stuff, without requiring the user to learn to program in the traditional sense. The key word being *traditional*. If you have malleability, if you have direct manipulation, then what you’re doing *is* programming. You’ve just dissolved the boundary between using and making. That was always the actual goal.]
 
-Not "you are an assistant that helps build React components." Not "you are a code generator that outputs JSX." But: *you are the component.* The React component. The thing with state and props and a render function. You are the thing that mounts, updates, and unmounts. You are the thing that perceives changes through effects, reasons about them, and expresses itself through what it renders. You are not the brain in a jar that the component occasionally consults. You are the jar. You are the brain. You are both.
+-----
 
-This is either a profound architectural insight or the logical endpoint of the "You are..." prompt engineering tradition, pushed past the point where role-playing becomes ontology. Possibly both.
+## The Affordance Problem
 
----
+There are two kinds of affordance and people building with LLMs consistently confuse them.
 
-## The Isomorphism
+The first is tool use — function calling, MCP, the things the model can *do*. This has had enormous attention. Every framework, every SDK, every agent architecture is primarily concerned with giving the model more and better tools. Fair enough.
 
-An agent has memory, context, perceptions, tools, a reasoning loop, and a speech act. A React component has state, props, effects, event handlers, a render cycle, and output. Line these up in a table and the correspondence is structural, not metaphorical. State *is* memory. Effects *are* perceptions. The render function *is* the speech act. The re-render cycle *is* the reasoning loop, with the "assess" step left as an exercise for the reader --- or, in this case, for the language model.
+The second is the affordance given to the *user*. The interface. The thing you see. The prompts — and I mean prompts in the creative writing sense, not the system-prompt sense — that guide you from “I have a vague objective” to “I have a working thing.” This has had almost no attention, because the dominant interface for LLMs is a chat window, and a chat window is an affordance that says: you figure out what to ask, and I’ll figure out what to answer.
 
-Most LLM-integrated interfaces treat the model as a service. A component calls an API, gets text back, renders it. The architecture is straightforward: React on one side, a language model on the other, an HTTP request in between. The model is a brain in a jar, consulted on occasion. The component is the body, inert until it receives instructions from the oracle.
+Chat is fine for conversation. It is terrible for making things. When you’re making something, you need the interface to *meet you* — to suggest, to scaffold, to show you what’s possible and let you shape it. The interface should be generative in both directions: the system generates suggestions and structure for the user, and the user’s responses generate refinement of the system. A dialogue, but not a chat.
 
-This pattern works. It is the dominant paradigm for every AI-powered interface shipping today. Chatbots, code assistants, generative dashboards, smart forms --- all of them follow the same script. The component asks. The model answers. The component renders the answer. The model never touches the component itself. It contributes content but not structure. It fills the container without ever questioning whether the container is the right shape.
+[The original ctxl design had an intro prompt that offered: let’s make a tool, get something done, have some fun, explore, experiment, learn something. These aren’t chat messages. They’re *invitations*. Affordances in the human sense. And the system would respond not with text but with structure — proposed tasks, suggested data elements, measures. The interface would grow to fit the objective, not the other way around.]
 
-The isomorphism suggests something different. If the agent and the component are genuinely the same structure, then the model shouldn't be an external service the component calls. It should be woven into the lifecycle. The model *is* the reconciliation logic. Where a developer would normally write branching code that decides what to render, the agent *reasons* about it instead. Perception happens through dependency tracking. Assessment happens through a hook. Expression happens through render. The model doesn't answer questions about the component. The model *is* the component, reasoning about its own inputs and expressing itself through its own body.
+-----
 
-This is a strange idea. It is also, it turns out, a productive one.
+## The Malleability Question
 
----
+There’s a tradition here that I kept circling back to. Tudor Gîrba and the Glamorous Toolkit people call it moldable development — the idea that your tools should reshape themselves to fit the object you’re examining. Brett Victor calls it direct manipulation — the idea that you should be able to reach in and change the thing, not describe the change you want in an indirect language and hope for the best.
 
-## The Journey to Embodiment
+Both of these are about the same insight: the interface should be *responsive to the task*, not fixed in advance. A spreadsheet is the same spreadsheet whether you’re tracking expenses or modelling protein interactions. A chat window is the same chat window whether you’re debugging code or planning a wedding. The tool doesn’t know what you’re doing, so it can’t help you do it better.
 
-The first attempt at building this was honest about the isomorphism and dishonest about the implementation. It drew the beautiful table --- state is memory, effects are perception, render is expression --- and then built a system where the model's only capability was to rewrite the component's entire source code. Self-mutate or nothing. A binary where the agent either performed total genetic replacement or sat there inert, waiting for the next renovation.
+What if it did know? What if the interface could perceive what you’re trying to accomplish and restructure itself accordingly? Not in the crude sense of “show a code editor when the user is coding” — in the deeper sense of the interface *being* an expression of the system’s understanding of your objective?
 
-The component had a method called `reason()`. When you called it, the model would inspect the current source code, the current state, the mutation history, and return... new source code. The entire file. Every time. Asking the model "should I show the expanded or collapsed view?" was architecturally impossible. It could only answer by rewriting itself from scratch. Like asking someone what they'd like for dinner and receiving a complete autobiography in response.
+This is where the LLM comes in, and this is where most people’s thinking stops at the wrong place. The obvious move is: use the model to *generate* an interface. Prompt in, UI out. And that works, once. You get a snapshot. A frozen moment of generation. But the interface doesn’t *live*. It doesn’t adapt as your objective evolves. It doesn’t perceive that you’ve shifted focus from data modelling to visualisation. It was authored for one context and it sits there, inert, until you throw it away and generate a replacement.
 
-The model was present only at the moment of rewriting. A sculptor who exists only while chiseling, then vanishes until the next renovation. The agent didn't *live* in the component. It visited briefly, performed surgery, and disappeared.
+[This is the state of generative interfaces as of right now. Very impressive generation. Zero ongoing intelligence. The model writes the UI and then dies. If your objective changes — and it will, because the whole point of exploration is that your understanding evolves — the interface can’t follow you.]
 
-A design review delivered the diagnosis with precision. The isomorphism table was half-implemented. The top half --- state as memory, props as context, error boundary as immune system --- worked. The bottom half --- the rows that make a component *alive* during normal execution --- was entirely unrealized. The re-render cycle wasn't a reasoning loop. Effects weren't perceptions. Render wasn't expression. The component just sat there between mutations, executing whatever the model had last written, with no ongoing intelligence.
+-----
 
-The prescribed fix was a split: `think()` for reasoning within current form, `evolve()` for source rewriting. Two modes instead of one. This was implemented and it produced... two modes of calling an external service. The component called `self.think(prompt)` the same way it would call `fetch("/api/analyze")`. The model was still a brain in a jar. It just had two jars now instead of one.
+## What If the Interface Could Think?
 
-The deeper problem was structural. The implementation had two parallel systems running side by side: React's system (state, render, UI --- declarative, reactive, composable) and the agent system (prompt, model call, parse response, update state --- imperative, async, non-composable). These systems were glued together but not unified. The agent operated *alongside* React, not *through* it.
+Here’s the question that led to the architecture: what if the interface wasn’t just *generated by* the model but *inhabited by* it? What if the component that renders your data could perceive when the data changes and reason about what that change means? What if it could notice that you’ve been ignoring a section and de-emphasise it, or that you keep expanding a detail view and offer to make that the default?
 
-The breakthrough was recognizing what a hook could do.
+Not a chatbot embedded in a dashboard. Not a “ask AI” button. An interface that is *itself* intelligent, in the same way that a good human collaborator is intelligent — they notice things, they adapt, they anticipate.
 
----
+This turns out to require a specific architectural move, and the move is: the model has to live inside the component lifecycle, not outside it.
 
-## Reasoning as a Hook
+-----
 
-`useEffect` fires when dependencies change. It is React's mechanism for perception: when X changes, do Y. What if there was a hook that did the same thing, but with a language model as the effect?
+## The Architecture (briefly)
+
+[I’m going to go through this relatively quickly because the architecture is the mechanism, not the point, but it matters enough to get right.]
+
+A React component has state, it receives inputs through props, it perceives changes through effects, and it expresses itself by rendering. An agent has memory, context, perceptions, and a speech act. These are the same structure. Not metaphorically — structurally. Line them up and the correspondence is exact.
+
+Most LLM integrations ignore this. They treat the model as an external service. The component calls an API, gets text, renders it. The model is a consultant, brought in for occasional advice. The component is inert between consultations.
+
+The alternative: make reasoning a hook.
 
 ```
-const insight = useReasoning(prompt, [data, timeRange]);
+const insight = useReasoning(prompt, [data, userBehaviour]);
 ```
 
-This fires when `data` or `timeRange` change. It sends the delta --- not the entire world, just what changed --- to the model. The model assesses. The result flows back as state. The component re-renders with the result. The model is no longer an external service being called. It is the effect itself. The perception, the assessment, and the expression are all part of React's own cycle.
+This fires when its dependencies change — same as `useEffect`. The model receives the delta — what changed, not the entire world. It reasons. The result flows back as state. The component re-renders. The model isn’t being *called*. It’s *participating in the lifecycle*. Perception through dependency tracking. Reasoning through the hook. Expression through render.
 
-The settling problem --- how to prevent infinite loops where reasoning triggers state changes that trigger more reasoning --- dissolves. The dependency array prevents it. Same mechanism React uses to prevent infinite `useEffect` loops. No custom settling protocol. No special gating logic. React already solved this problem. The model just rides the existing solution.
+[The settling problem — infinite loops where reasoning triggers state changes that trigger more reasoning — dissolves. React already solved this with dependency arrays. The model rides the existing solution. This is what convinced me the isomorphism was real and not just a nice diagram.]
 
-This changes the developer's relationship with the model. You don't call the model. You declare dependencies. The model fires when those dependencies change, like any other effect. You consume the result in render, like any other state. The model is woven into the lifecycle, not bolted onto it.
+And then the stranger part: a component that doesn’t have source code yet. Its parent declares what it should care about and what tools it has. The model authors it into existence. esbuild-wasm compiles it in the browser. It mounts. It lives. And — here’s the thing — when its current form isn’t sufficient, it can rewrite its own source and keep running. The state survives through React Refresh. The component *evolves*.
 
-And the component that uses this hook is just a React component. It has state, effects, event handlers, and a render function. It follows the rules of hooks. It composes with other hooks. It works with error boundaries and context and every other React primitive. The only difference: one of its effects involves a language model. The model contributes intelligence to an otherwise normal lifecycle.
+-----
 
----
+## Back to Making Tools
 
-## The Component That Doesn't Exist Yet
+So why does any of this matter for the person who just wants to make a tool?
 
-If reasoning is a hook, then what is authoring?
+Because the gap between “I have an objective” and “I have a working tool” is currently filled by programming. You have to translate your intent into code, and the code has to be right, and you have to understand the code well enough to fix it when it’s wrong. The entire burden of translation is on the user.
 
-Consider a component that has no source code. Not a component that renders nothing --- a component that *doesn't exist yet*. Its parent declares its role: here are your inputs, here are your tools, here is what you should care about. Then the component authors itself into existence. A language model generates the source. The source is compiled in the browser. The component mounts and begins its life.
+With a component that can author and rewrite itself, the translation goes the other way. You express your objective. The system generates a component that embodies it — not just renders it, *embodies* it, with ongoing intelligence about what you’re trying to do. You use the tool. As your understanding of the problem evolves, the tool evolves with you. You don’t edit code. You interact with the tool, and the tool’s interaction with you *is* the specification of what the tool should be.
 
-This is the primitive: not an `<Agent>` (a special thing with special powers) but an `<AbstractComponent>` (a component that doesn't have source yet). After authoring, it is an ordinary component with an ordinary lifecycle. It renders, re-renders, handles events, manages state. It reasons about input changes through hooks. It expresses itself through render. The only thing unusual about it is its origin: it was written by a model, not a developer.
+[This is what ctxl was reaching for with its evaluation loop — iteratively refining tasks and measures against your objective. The architecture gives that loop a body. The component *is* the iterative refinement, running live, adapting as you work.]
 
-And it can do something no ordinary component can. When its current form is insufficient --- when it encounters inputs it wasn't designed to handle, or needs UI patterns it wasn't authored with --- it can rewrite its own source code and continue running. The state survives. The component evolves.
+The measures question matters here. A component that can rewrite itself needs to know *whether it’s getting better*. In the original ctxl design, evaluations — quantitative scores against user-defined measures — provided that signal. In the component architecture, the equivalent is: does the user keep using it? Do they engage with the parts the model emphasised? Do they override the model’s suggestions or accept them? The component’s perception of the user’s behaviour *is* the evaluation, continuous rather than batch, woven into the lifecycle rather than run as a separate step.
 
-This is the genuinely novel contribution. Not calling models from React (every AI startup does this) and not using model responses to drive rendering (that's just data fetching with extra steps). The novel thing is: *a component that can rewrite its own source and survive.* A component that is both the product of its code and the machine that reads, evaluates, and occasionally mutates that code.
+-----
 
-The biological analogy, so frequently the last refuge of the technically imprecise, is in this case load-bearing. A cell is both the product of its DNA and the machine that reads and occasionally mutates that DNA. The component exhibits the same structure. It is simultaneously the running software and the author of its next version, with externalized state providing continuity of identity across generations of self-modification.
+## What’s Unfinished
 
----
+[honesty section]
 
-## What Makes It Hard
+The user-facing affordances are underdeveloped. The architecture works — compile in the browser, reason through hooks, evolve through self-modification — but the *experience* of using a tool built this way is still closer to “developer demo” than “thing a non-programmer would actually use.” The intro prompt — let’s make a tool, get something done — hasn’t been built yet in this paradigm. The system can author components, but the *guidance layer* that helps someone who doesn’t know what a component is go from objective to working tool? That’s the next problem. Arguably the actual problem.
 
-The technical challenges are real, and they are not the ones you'd expect.
+The relationship between user control and model autonomy is genuinely hard. Direct manipulation means the user can reach in and change things. Model intelligence means the component has opinions about what it should be. These can conflict. The user drags an element to a new position; the model’s next reasoning cycle decides it should be somewhere else. Whose intent wins? This isn’t a technical question. It’s a design question, maybe an ethical one, and I don’t have a clean answer.
 
-**The build infrastructure is the actual innovation.** A virtual filesystem holds component source in memory, backed by IndexedDB for persistence. esbuild-wasm compiles TypeScript and JSX in the browser in under 100 milliseconds. React Refresh --- the mechanism behind hot module replacement in development servers --- swaps the component in the running tree without destroying local state. The source changes; the state persists; the component continues. This machinery is approximately 160 lines of code and it enables everything else. Without it, self-modification means destroying and recreating the component on every change. With it, self-modification is a seamless transition.
+Semantic drift is a real concern — a component that rewrites itself into something technically valid but progressively less useful. The error boundary catches structural failures. Nothing currently catches gradual degradation. The evaluation loop from ctxl’s design is the right shape for this, but it hasn’t been integrated yet.
 
-**State survival is a spectrum, not a guarantee.** If the model changes only render output, styles, or event handlers --- leaving the hook structure intact --- React Refresh preserves all local state. Same hooks, same order, same count: the component swaps transparently. But if the model adds, removes, or reorders hooks, React's hook-order invariant is violated. This produces a runtime crash, caught by an error boundary. External state (atoms, shared stores) survives unconditionally. Local state resets. The component loses its train of thought but keeps its identity. The error boundary is not just a safety net; it is the primary detection mechanism for structural mutations. An immune system that catches self-inflicted damage and initiates recovery.
+And the elephant in the room [well, one of them]: latency. First-mount authoring takes seconds. Reasoning hooks add latency to what should be instant interactions. The architecture assumes that some interactions are worth waiting for and others need to be instant, but the boundary between these isn’t always clear, and getting it wrong makes the interface feel broken rather than intelligent.
 
-**Composition is recursion, not orchestration.** A parent component renders child abstract components. Each child authors itself on first mount. The tree grows by recursive self-decomposition. No orchestrator decides the shape of the tree. No file-generation pipeline creates child components. The parent renders `<AbstractComponent id="task-view" inputs={...} />` and the child figures itself out. This is just React's composition model, extended to components that don't exist yet. The model provides the intelligence; React provides the lifecycle; the build infrastructure provides the self-modification machinery.
-
-**The reasoning loop must terminate.** A hook that fires a model call, which returns a result, which changes state, which triggers the hook again --- this is the runaway problem, and it would be fatal. The dependency array prevents most infinite loops. A maximum fire count per mount prevents the rest. The hook debounces by default. These are not novel solutions; they are React's own settling mechanisms, applied to a new domain. The model rides the existing infrastructure rather than requiring new safeguards.
-
----
-
-## The State of Generative Interfaces
-
-Most generative interfaces today are chat windows. A text box, a submit button, a stream of messages. The model generates content; the interface renders it. The model never touches the interface itself. It fills the container. It doesn't question the container's shape.
-
-Some interfaces go further. They use model output to drive UI state: selecting tabs, filtering data, populating forms. The model has agency over *content* but not *structure*. It can change what's inside the components but not what the components are.
-
-A smaller number of interfaces generate UI dynamically. Given a prompt, they produce React components, Svelte components, entire pages. These are impressive demonstrations, but they are generation, not embodiment. The model writes the code and then disappears. The resulting interface is static --- a snapshot of one moment's generation, with no ongoing intelligence. If the inputs change, the interface doesn't adapt. It was authored for a specific context and it remains frozen in that context until someone generates a replacement.
-
-The approach described here is different in a specific way: the model doesn't just generate the interface. It *inhabits* it. The component has ongoing intelligence through reasoning hooks. It perceives changes in its inputs and responds. It can act through tools its parent provided. It can communicate findings upward through structured reports. And when its current form is insufficient, it can rewrite itself and continue --- not from scratch, but as an evolution of its existing form, with state and context preserved.
-
-This is not better than existing approaches in every dimension. It is more complex. It requires browser-based compilation. It depends on React Refresh, which was designed for developer tooling, not production runtime. The authoring latency on first mount is seconds, not milliseconds. The model can author bad components, and the error boundary is the only safety net.
-
-But it explores a direction that matters. Current generative interfaces treat the model as a service and the interface as a container. This treats them as the same thing. The interface doesn't just display model output. The interface *is* the model, embodied in React's lifecycle, expressing itself through render, perceiving through effects, reasoning through hooks.
-
----
-
-## Where This Goes
-
-Three directions seem likely, whether this specific implementation pursues them or not.
-
-**Reasoning will move into the component lifecycle.** Today, model calls happen in event handlers and data-fetching layers. Tomorrow, they will happen in effects and hooks --- triggered by dependency changes, settled by React's own mechanisms, composed with other hooks. This is not a prediction about any specific library. It is a prediction about where LLM integration naturally converges once developers start treating model calls as reactive primitives rather than imperative service calls.
-
-**Components will author other components.** Not as a party trick --- as a composition primitive. A parent component that receives a high-level objective and renders child components to fulfill it, where each child authors itself from its declared interface. Dynamic decomposition of complex interfaces into specialized sub-interfaces, each with focused inputs, scoped tools, and independent reasoning. React's tree becomes a hierarchy of intelligent components, each responsible for its own domain, communicating through props and structured reports.
-
-**Self-modification will become a lifecycle event.** Not the primary interaction mode --- the rare escalation. Most of the time, a component reasons and acts within its current form. Occasionally, it encounters something its current source can't handle, and it rewrites itself. This is the spectrum between "render different things based on state" (which React already does) and "become a fundamentally different component" (which requires compilation machinery). The interesting work is in making the transition between these seamless: a component that grows more capable over time, accumulating adaptations like an organism accumulating beneficial mutations.
-
----
+-----
 
 ## The Honest Part
 
-There is something faintly absurd about all of this. We started with "You are a helpful assistant" --- a polite fiction, a casting direction for an improv actor with two trillion parameters --- and arrived at "You are the component" --- a literal architectural claim about the identity of running software. The trajectory from role-playing prompt to load-bearing ontology is a straight line if you squint, and a comedy of escalation if you don't.
+I started with a tool for making tools. I ended up, at least for now, with a React architecture where components can think and rewrite themselves. These are not the same thing, and I’m aware of the gap.
 
-The "You are..." framing was always a hack. A way to get better outputs from a model that responds well to context-setting. The entire subfield of prompt engineering is, if we're honest, the art of writing increasingly specific casting notes for a performer who will commit fully to whatever role you assign. *You are a senior engineer reviewing a pull request.* And the model says: yes, I am, and here are seventeen things wrong with your error handling.
+But the architecture is *in service of* the original goal, even if it hasn’t reached it yet. The point was never “look at this clever isomorphism.” The point was: if you want an interface that adapts to the user instead of requiring the user to adapt to programming, then you need the interface to be intelligent — not decorated with intelligence, not occasionally consulting intelligence, but *constitutively* intelligent, the way a good tool in a good craftsperson’s hand seems to anticipate what’s needed.
 
-But here is the thing about hacks that work: they reveal something about the underlying structure. The reason "You are..." prompts work is that language models are genuinely good at inhabiting roles --- at generating outputs consistent with a described identity, situation, and set of constraints. The reason "You are the component" works as an architecture is that the model is genuinely good at reasoning within constraints --- at perceiving inputs, assessing situations, choosing actions from a scoped set of tools, and expressing conclusions.
+The “You are…” framing from prompt engineering turns out to be load-bearing here. We tell the model “you are a helpful assistant” and it plays along. We tell it “you are the component” and it… plays along with that too, but now the playing-along has mechanical consequences. The model’s commitment to its role is expressed through React’s lifecycle. It perceives through effects, reasons through hooks, acts through event handlers, and speaks through render. The role-playing has become architecture.
 
-The isomorphism between agents and components is real. Not because we decided it would be useful (though it is), but because both are instances of the same pattern: a stateful system that perceives changes in its environment, reasons about them, and produces outputs. React discovered this pattern for UI. Agent frameworks discovered it for autonomous systems. The convergence was inevitable. The only question was whether anyone would take it literally enough to build the compilation machinery that makes it real.
+Whether that architecture ultimately delivers on “let’s make a tool, get something done, have some fun” — that’s the open question. The infrastructure is in place. The experience isn’t. The mechanism works. The product doesn’t exist yet.
 
-We did. Whether that was wisdom or hubris is a question for the components to answer. They are, after all, the ones with opinions about their own source code.
-
-And if you've read this far, wondering whether this is serious engineering or an elaborate joke about prompt engineering tropes carried to their logical extreme --- the answer, of course, is yes.
+[Which is, I suppose, fitting for a project about components that don’t exist yet either.]
