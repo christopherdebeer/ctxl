@@ -196,6 +196,7 @@ export function AbstractComponent({
 
   const [phase, setPhase] = useState<"checking" | "authoring" | "ready" | "error">("checking");
   const [errorMsg, setErrorMsg] = useState("");
+  const [reshapeVersion, setReshapeVersion] = useState(0);
   const authoringRef = useRef(false);
   const shapeRef = useRef({ inputs: getShape(inputs), tools: getToolShape(tools), handlers: getHandlerShape(handlers) });
 
@@ -249,7 +250,10 @@ export function AbstractComponent({
         });
       }
     }
+    // Bump version to force the authoring effect to re-fire.
+    // shapeRef reset ensures isReauthor detects existing source.
     shapeRef.current = { inputs: "", tools: "", handlers: "" };
+    setReshapeVersion(v => v + 1);
     setPhase("checking");
   }, [id]);
 
@@ -279,8 +283,12 @@ export function AbstractComponent({
   useEffect(() => {
     if (authoringRef.current) return;
 
-    // Already have the component and shape hasn't changed
-    if (compiledComponent && !shapeChanged) {
+    // Reshape request: phase is "checking", reshapeVersion > 0 (not initial mount),
+    // and we already have a compiled component → reshape() was called.
+    const reshapeRequested = phase === "checking" && reshapeVersion > 0 && !!compiledComponent;
+
+    // Already have the component, no shape change, and no reshape request
+    if (compiledComponent && !shapeChanged && !reshapeRequested) {
       shapeRef.current = { inputs: currentInputShape, tools: currentToolShape, handlers: currentHandlerShape };
       setPhase("ready");
       return;
@@ -302,7 +310,7 @@ export function AbstractComponent({
       try {
         const vfsPath = "/src/ac/" + id + ".tsx";
         const existingSource = runtime.files.get(vfsPath) || "";
-        const isReauthor = shapeChanged && !!existingSource;
+        const isReauthor = (shapeChanged || reshapeRequested) && !!existingSource;
 
         // Build handler descriptions for the authoring prompt
         const handlerDescs: Record<string, string> = {};
@@ -377,7 +385,7 @@ export function AbstractComponent({
         authoringRef.current = false;
       }
     })();
-  }, [id, ctxRuntime, compiledComponent, shapeChanged, currentInputShape, currentToolShape, currentHandlerShape]);
+  }, [id, ctxRuntime, compiledComponent, shapeChanged, reshapeVersion, phase, currentInputShape, currentToolShape, currentHandlerShape]);
 
   // Error boundary crash handler with rollback on repeated crashes
   const handleCrash = useCallback((error: Error, crashCount: number) => {
